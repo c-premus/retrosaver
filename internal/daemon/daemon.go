@@ -252,9 +252,10 @@ type machine struct {
 	cancel   context.CancelFunc
 	launched chan launchResult
 
-	current saver
-	tried   []string
-	blanked bool
+	current     saver
+	tried       []string
+	blanked     bool
+	activeArmed bool
 }
 
 // arm registers the idle watches and the user-active watch.
@@ -281,7 +282,9 @@ func (m *machine) arm() error {
 			return err
 		}
 	}
-	return m.armActive()
+	// The user-active watch is deliberately NOT armed here. See
+	// ensureActiveWatch.
+	return nil
 }
 
 func (m *machine) addIdle(after time.Duration, kind watchKind) error {
@@ -293,16 +296,33 @@ func (m *machine) addIdle(after time.Duration, kind watchKind) error {
 	return nil
 }
 
-// armActive registers the one-shot user-active watch. Mutter drops a
-// user-active watch as soon as it fires, so it must be re-registered after
-// every reset. The idle watches persist and re-arm themselves.
-func (m *machine) armActive() error {
+// ensureActiveWatch registers the user-active watch, once per idle cycle.
+//
+// It is called when a stage begins rather than when the watches are armed,
+// and that timing is load-bearing. A user-active watch added while the user is
+// *already* active fires immediately, so arming one from the user-active
+// handler produces a tight loop: fire, tear down, re-arm, fire again, for as
+// long as the user keeps touching the machine. Observed on a real session as
+// ~200 teardowns in 20 seconds, hammering D-Bus and the journal throughout.
+//
+// Arming it only once a stage is running avoids that completely. By then the
+// session is idle by definition, so the watch sits quiet until the user really
+// does come back, and there is never a moment where one is registered while
+// nothing needs tearing down.
+func (m *machine) ensureActiveWatch() {
+	if m.activeArmed {
+		return
+	}
 	id, err := m.mon.AddUserActiveWatch()
 	if err != nil {
-		return fmt.Errorf("daemon: arming the user-active watch: %w", err)
+		// Without this watch the daemon cannot notice the user returning, so
+		// it would leave a module on screen. Report it and let the next stage
+		// try again.
+		m.d.log.Error("arming the user-active watch", "err", err)
+		return
 	}
 	m.watches[id] = kindActive
-	return nil
+	m.activeArmed = true
 }
 
 func (m *machine) handleWatch(id idle.WatchID) {
@@ -334,6 +354,9 @@ func (m *machine) onSaver() {
 		return
 	}
 	m.stage = stageSaver
+	// Every stage arms it, not just the saver: on a cold start past the lock
+	// threshold the lock watch can fire without onSaver ever running.
+	m.ensureActiveWatch()
 	m.d.log.Info("idle: starting the screensaver")
 	m.startLaunch()
 }
@@ -343,6 +366,9 @@ func (m *machine) onLock() {
 		return
 	}
 	m.stage = stageLock
+	// Every stage arms it, not just the saver: on a cold start past the lock
+	// threshold the lock watch can fire without onSaver ever running.
+	m.ensureActiveWatch()
 	m.d.log.Info("idle: locking the session")
 	m.stopSaver()
 	if err := m.d.session.Lock(); err != nil {
@@ -355,6 +381,9 @@ func (m *machine) onBlank() {
 		return
 	}
 	m.stage = stageBlank
+	// Every stage arms it, not just the saver: on a cold start past the lock
+	// threshold the lock watch can fire without onSaver ever running.
+	m.ensureActiveWatch()
 	m.d.log.Info("idle: blanking the display")
 	m.stopSaver()
 	if err := m.d.session.SetIdleDelay(blankIdleDelay); err != nil {
@@ -389,6 +418,7 @@ func (m *machine) onActive(id idle.WatchID) {
 // That is also why a successful RemoveWatch proves nothing about whether a
 // fired user-active watch was auto-removed -- so this does not try to infer it.
 func (m *machine) rearm() error {
+	m.activeArmed = false
 	for id := range m.watches {
 		if err := m.mon.RemoveWatch(id); err != nil {
 			m.d.log.Debug("removing a watch while re-arming", "id", id, "err", err)

@@ -332,7 +332,10 @@ const (
 	wBlank  idle.WatchID = 3
 	wActive idle.WatchID = 4
 
-	// After a re-arm the fake hands out the next four ids in the same order.
+	// arm() registers three idle watches; the user-active watch is added when
+	// a stage begins, so with the default config the ids run
+	// 1 saver, 2 lock, 3 blank, then 4 user-active once the saver fires.
+	// A re-arm registers the next three idle watches.
 	wSaver2 idle.WatchID = 5
 	wLock2  idle.WatchID = 6
 )
@@ -351,8 +354,10 @@ func TestArmsAllFourWatchesAtTheRightThresholds(t *testing.T) {
 	if got := h.mon.intervals(); !slices.Equal(got, want) {
 		t.Errorf("idle watch thresholds = %v, want %v", got, want)
 	}
-	if got := h.mon.activeWatches(); len(got) != 1 {
-		t.Errorf("user-active watches = %v, want exactly one", got)
+	// No user-active watch until a stage actually starts; see
+	// TestUserActiveWatchIsNotReArmedImmediately.
+	if got := h.mon.activeWatches(); len(got) != 0 {
+		t.Errorf("user-active watches = %v, want none before any stage runs", got)
 	}
 	// The daemon takes ownership of the idle policy on entry.
 	if got := h.sess.delays(); len(got) == 0 || got[0] != 0 {
@@ -459,8 +464,60 @@ func TestUserActiveTearsDownAndReArms(t *testing.T) {
 	if got := h.mon.intervals(); len(got) != 6 {
 		t.Errorf("idle watches added = %v, want six (three per arming, twice)", got)
 	}
+	// Exactly one, armed when the saver stage began. Re-arming a second one
+	// here is the bug TestUserActiveWatchIsNotReArmedImmediately guards.
+	if got := h.mon.activeWatches(); len(got) != 1 {
+		t.Errorf("user-active watches = %v, want one", got)
+	}
+}
+
+// Regression test for a live-observed storm: roughly 200 teardowns in 20
+// seconds while the user was simply using the machine.
+//
+// A user-active watch added while the user is ALREADY active fires
+// immediately, so re-arming one from the user-active handler loops: fire,
+// tear down, re-arm, fire again, for as long as the user keeps typing. The
+// watch must therefore be armed when a stage begins -- when the session is
+// idle by definition -- and never from the handler.
+func TestUserActiveWatchIsNotReArmedImmediately(t *testing.T) {
+	h := start(t, defaultConfig())
+	defer h.stop() //nolint:errcheck
+
+	if got := h.mon.activeWatches(); len(got) != 0 {
+		t.Fatalf("user-active watches = %v, want none before a stage runs", got)
+	}
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+	if got := h.mon.activeWatches(); len(got) != 1 {
+		t.Fatalf("user-active watches = %v, want one once the saver stage began", got)
+	}
+
+	h.fire(wActive, "watch:active")
+	if got := h.mon.activeWatches(); len(got) != 1 {
+		t.Errorf("user-active watches = %v after teardown; re-arming one here is "+
+			"exactly the loop that caused ~200 teardowns in 20s on a real session", got)
+	}
+
+	// It comes back only when the next cycle's saver stage starts.
+	h.fire(wSaver2, "watch:saver")
+	h.want("launch:ok:atlantis")
 	if got := h.mon.activeWatches(); len(got) != 2 {
-		t.Errorf("user-active watches = %v, want two (the original and a re-arm)", got)
+		t.Errorf("user-active watches = %v, want a second one for the second cycle", got)
+	}
+}
+
+// On a cold start past the lock threshold the lock watch can fire without the
+// saver handler ever running, so the user-active watch must be armed there too
+// or the daemon would never notice the user coming back.
+func TestLockStageArmsTheUserActiveWatchToo(t *testing.T) {
+	h := start(t, defaultConfig())
+	defer h.stop() //nolint:errcheck
+
+	h.fire(wLock, "watch:lock")
+
+	if got := h.mon.activeWatches(); len(got) != 1 {
+		t.Errorf("user-active watches = %v, want one armed by the lock stage", got)
 	}
 }
 
