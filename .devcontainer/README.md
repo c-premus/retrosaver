@@ -19,7 +19,7 @@ Use this container for:
 - Packaging: `nfpm pkg --packager deb`
 - Authoring, git, and the Claude/Codex CLIs
 
-Real verification is the manual procedure in the project specification (§8) and must be run
+Real verification is the manual procedure in docs/spec.md (§8) and must be run
 on the host, in an actual GNOME/Wayland session.
 
 ## What is a Dev Container?

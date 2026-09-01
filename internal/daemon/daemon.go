@@ -1,7 +1,7 @@
 // Package daemon implements the three-stage idle state machine.
 //
 // Stages, all timed from when the session goes idle. Any user activity at any
-// stage tears everything down and re-arms from zero. See specification 3 and 6.3.
+// stage tears everything down and re-arms from zero. See docs/spec.md sections 3 and 6.3.
 //
 //	saver   SAVER_DELAY                             launch a random module
 //	lock    SAVER_DELAY + LOCK_AFTER                stop the module, lock the session

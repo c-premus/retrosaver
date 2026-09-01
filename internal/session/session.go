@@ -2,7 +2,7 @@
 // setting that controls blanking.
 //
 // retrosaver deliberately reuses GNOME's own blanking and locking paths rather
-// than poking DPMS behind the compositor's back. See specification section 6.3.
+// than poking DPMS behind the compositor's back. See docs/spec.md section 6.3.
 package session
 
 import "errors"

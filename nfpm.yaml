@@ -30,9 +30,14 @@ depends:
   - xscreensaver-data-extra
   - xscreensaver-gl
   - xscreensaver-gl-extra
-  # EWMH fullscreen/above, and pointer hiding over the saver window.
+  # EWMH fullscreen/above, pointer hiding over the saver window, and bounded
+  # window discovery. xdotool is what makes `search --sync --pid` possible, so
+  # internal/window waits for the module's window to map instead of polling.
+  # Note the pointer-hiding binary is unclutter-xfixes, NOT unclutter: this
+  # package ships /usr/bin/unclutter-xfixes and declares no Provides: unclutter.
   - wmctrl
   - unclutter-xfixes
+  - xdotool
 
 conflicts:
   # The xscreensaver DAEMON is the broken component: it does not work under
