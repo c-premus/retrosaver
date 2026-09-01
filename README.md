@@ -11,11 +11,11 @@ Debian and Ubuntu already package, and supplies only the piece GNOME dropped: an
 trigger and a fullscreen wrapper. `retrosaver` is glue. All the actual artwork belongs to
 XScreenSaver.
 
-> **Status: implemented, not yet released.** All the pieces are written and unit-tested, and
-> idle detection and session control are verified against a live GNOME 50.1 session. The
-> fullscreen wrapper and the end-to-end idle sequence still need the manual verification in
-> `docs/spec.md` §8 on a real desktop, and no release has been cut yet. See
-> `memory-bank/progress.md`.
+> **Status: implemented and verified, not yet released.** All the pieces are written and
+> unit-tested, and steps 1–5 of the `docs/spec.md` §8 procedure are verified against a live
+> GNOME 50.1 session — idle detection, session control, the fullscreen wrapper, and the full
+> saver → lock → blank → teardown sequence. Reboot persistence (§8 step 6) is the one
+> remaining check, and no release has been cut yet. See `memory-bank/progress.md`.
 
 ## Why this exists
 
