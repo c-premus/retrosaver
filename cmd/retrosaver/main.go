@@ -11,15 +11,24 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"slices"
+	"strings"
 	"syscall"
 
 	"github.com/c-premus/retrosaver/internal/config"
 	"github.com/c-premus/retrosaver/internal/daemon"
+	"github.com/c-premus/retrosaver/internal/idle"
 	"github.com/c-premus/retrosaver/internal/modules"
+	"github.com/c-premus/retrosaver/internal/session"
+	"github.com/c-premus/retrosaver/internal/window"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
@@ -114,8 +123,48 @@ func cmdRun(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	_ = fs.Arg(0) // optional module name
-	return fmt.Errorf("run: not implemented")
+
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	// Refuse to stack a second module on top of a running one.
+	if name, running := window.RunningModule(); running {
+		if name != "" {
+			return fmt.Errorf("run: %s is already running; `retrosaver stop` clears it", name)
+		}
+		return errors.New("run: a module is already running; `retrosaver stop` clears it")
+	}
+
+	finder := modules.NewFinder()
+	name := fs.Arg(0)
+	if name == "" {
+		if name, err = finder.Pick(cfg.Include, cfg.Exclude); err != nil {
+			return err
+		}
+	} else {
+		// Check against everything discovered rather than the selectable
+		// set, so naming an EXCLUDE'd module explicitly still works, while a
+		// typo gets a better message than exec's "no such file".
+		discovered, err := finder.Discover()
+		if err != nil {
+			return err
+		}
+		if !slices.Contains(discovered, name) {
+			return fmt.Errorf(
+				"run: %q is not a display module on this system; `retrosaver list` shows what is", name)
+		}
+	}
+
+	saver, err := window.Launch(finder.Path(name))
+	if err != nil {
+		return err
+	}
+	// The module outlives this process on purpose: `retrosaver run` hands the
+	// screen over and returns, and `retrosaver stop` takes it back.
+	fmt.Printf("%s running (pid %d)\n", name, saver.Process().Pid)
+	return nil
 }
 
 func cmdStop(args []string) error {
@@ -125,8 +174,16 @@ func cmdStop(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	_ = *keepIdleDelay
-	return fmt.Errorf("stop: not implemented")
+
+	// StopRunning treats "nothing was running" as success: stop is the panic
+	// button and must be safe to run at any time.
+	if err := window.StopRunning(); err != nil {
+		return err
+	}
+	if *keepIdleDelay {
+		return nil
+	}
+	return session.RestoreIdleDelay()
 }
 
 func cmdList(args []string) error {
@@ -150,12 +207,65 @@ func cmdList(args []string) error {
 	return nil
 }
 
+const (
+	unitName          = "retrosaver.service"
+	packagedUnitPath  = "/usr/lib/systemd/user/" + unitName
+	exampleConfigPath = "/usr/share/retrosaver/retrosaver.conf.example"
+)
+
 func cmdSetup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return fmt.Errorf("setup: not implemented")
+
+	if err := preflight(); err != nil {
+		return err
+	}
+
+	cfgPath, err := config.UserConfigPath()
+	if err != nil {
+		return err
+	}
+	created, err := installConfig(cfgPath)
+	if err != nil {
+		return err
+	}
+
+	// Save before setting: SaveIdleDelay refuses to overwrite an existing
+	// file, so running setup twice cannot record the daemon's own 0 as the
+	// user's original and destroy their auto-lock.
+	if err := session.SaveIdleDelay(); err != nil {
+		return err
+	}
+	if err := session.SetIdleDelay(0); err != nil {
+		return err
+	}
+
+	if err := systemctl("daemon-reload"); err != nil {
+		return err
+	}
+	if err := systemctl("enable", "--now", unitName); err != nil {
+		return err
+	}
+
+	saved, _ := session.SavedIdleDelayPath()
+	fmt.Println("retrosaver is set up and running.")
+	fmt.Println()
+	if created {
+		fmt.Printf("  config written  %s\n", cfgPath)
+	} else {
+		fmt.Printf("  config kept     %s (already existed, not overwritten)\n", cfgPath)
+	}
+	fmt.Printf("  idle-delay      saved to %s, now owned by retrosaver\n", saved)
+	fmt.Println()
+	fmt.Println("Test it:      retrosaver run atlantis   (then: retrosaver stop)")
+	fmt.Println("Watch logs:   journalctl --user -u retrosaver -f")
+	fmt.Println("Reverse it:   retrosaver teardown")
+	fmt.Println()
+	fmt.Println("Note: retrosaver now owns org.gnome.desktop.session idle-delay.")
+	fmt.Println("If the daemon is not running there is no auto-lock at all; see the README.")
+	return nil
 }
 
 func cmdTeardown(args []string) error {
@@ -163,5 +273,163 @@ func cmdTeardown(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return fmt.Errorf("teardown: not implemented")
+
+	// Disable first so the unit cannot restart mid-teardown. A unit that was
+	// never enabled is not an error worth aborting for.
+	if err := systemctl("disable", "--now", unitName); err != nil {
+		fmt.Fprintf(os.Stderr, "retrosaver: %v (continuing)\n", err)
+	}
+
+	var errs []error
+	errs = append(errs, window.StopRunning())
+	// Restore before clearing, or there is nothing left to restore from.
+	errs = append(errs, session.RestoreIdleDelay())
+	errs = append(errs, session.ClearSavedIdleDelay())
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+
+	cfgPath, _ := config.UserConfigPath()
+	fmt.Println("retrosaver has been torn down.")
+	fmt.Println()
+	fmt.Println("  idle-delay      restored; GNOME owns the idle policy again")
+	fmt.Printf("  config kept     %s (remove it by hand if you want it gone)\n", cfgPath)
+	fmt.Println()
+	fmt.Println("Remove the package with: sudo apt remove retrosaver")
+	return nil
+}
+
+// preflight refuses to install into a session retrosaver cannot drive, with
+// an explanation rather than a failure later at runtime.
+func preflight() error {
+	if got := os.Getenv("XDG_SESSION_TYPE"); got != "wayland" {
+		return fmt.Errorf(
+			"setup: XDG_SESSION_TYPE is %q, not \"wayland\". retrosaver exists for GNOME on "+
+				"Wayland; on X11 the upstream xscreensaver daemon works and is a better fit", got)
+	}
+	if desktop := os.Getenv("XDG_CURRENT_DESKTOP"); !strings.Contains(strings.ToUpper(desktop), "GNOME") {
+		return fmt.Errorf(
+			"setup: XDG_CURRENT_DESKTOP is %q, which does not look like GNOME. KDE and wlroots "+
+				"compositors support the Wayland idle protocols, so upstream xscreensaver 6.11+ "+
+				"works there natively and retrosaver is unnecessary", desktop)
+	}
+	if os.Getenv("DISPLAY") == "" {
+		return errors.New(
+			"setup: DISPLAY is unset, so XWayland is not reachable. Display modules are X11 " +
+				"clients and cannot run without it")
+	}
+
+	// The idle monitor is the whole basis of the daemon, so prove it now
+	// rather than at the first idle timeout.
+	mon, err := idle.Connect()
+	if err != nil {
+		return fmt.Errorf("setup: %w", err)
+	}
+	mon.Close()
+
+	if err := requireBinaries(); err != nil {
+		return err
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	available, err := modules.NewFinder().Available(cfg.Include, cfg.Exclude)
+	if err != nil {
+		return fmt.Errorf("setup: %w (install the xscreensaver-data and -gl packages)", err)
+	}
+	fmt.Printf("preflight ok: GNOME on Wayland, idle monitor reachable, %d modules available\n",
+		len(available))
+
+	if _, err := os.Stat(packagedUnitPath); err != nil {
+		return fmt.Errorf(
+			"setup: %s is missing, so there is no unit to enable. Install the .deb rather "+
+				"than running setup from a source build", packagedUnitPath)
+	}
+	return nil
+}
+
+// requireBinaries checks the external tools internal/window shells out to.
+func requireBinaries() error {
+	var missing []string
+	for _, bin := range []string{"wmctrl", "xdotool"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			missing = append(missing, bin)
+		}
+	}
+	// Either name satisfies the pointer-hiding requirement: the
+	// unclutter-xfixes package installs unclutter-xfixes, not unclutter.
+	if _, err := exec.LookPath("unclutter-xfixes"); err != nil {
+		if _, err := exec.LookPath("unclutter"); err != nil {
+			missing = append(missing, "unclutter-xfixes")
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("setup: missing required tools: %s (sudo apt install %s)",
+			strings.Join(missing, ", "), strings.Join(missing, " "))
+	}
+	return nil
+}
+
+// installConfig writes the user's config file if it does not exist, reporting
+// whether it created one. An existing config is never overwritten.
+func installConfig(path string) (bool, error) {
+	if _, err := os.Stat(path); err == nil {
+		return false, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("setup: checking %s: %w", path, err)
+	}
+
+	// Prefer the commented example the package ships; fall back to rendering
+	// the compiled-in defaults so setup also works from a source build.
+	content, err := os.ReadFile(exampleConfigPath)
+	if err != nil {
+		content = []byte(defaultConfigFile())
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, fmt.Errorf("setup: creating %s: %w", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		return false, fmt.Errorf("setup: writing %s: %w", path, err)
+	}
+	return true, nil
+}
+
+// defaultConfigFile renders config.Defaults as a config file, so a source
+// build produces the same settings the package's example documents.
+func defaultConfigFile() string {
+	d := config.Defaults()
+	return fmt.Sprintf(`# Seconds of idle before the screensaver starts.
+SAVER_DELAY=%d
+
+# Seconds after the screensaver starts before the session locks. 0 disables.
+LOCK_AFTER=%d
+
+# Seconds after locking before the display powers off. 0 disables.
+BLANK_AFTER=%d
+
+# Space-separated module names never to pick. These need image assets,
+# network access, or elevated capabilities and misbehave standalone.
+EXCLUDE="%s"
+
+# Optional: if non-empty, pick only from this space-separated list.
+# e.g. INCLUDE="atlantis flame ifs apollonian discrete coral sierpinski"
+INCLUDE="%s"
+`,
+		int(d.SaverDelay.Seconds()),
+		int(d.LockAfter.Seconds()),
+		int(d.BlankAfter.Seconds()),
+		strings.Join(d.Exclude, " "),
+		strings.Join(d.Include, " "))
+}
+
+func systemctl(args ...string) error {
+	full := append([]string{"--user"}, args...)
+	out, err := exec.Command("systemctl", full...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("systemctl %s: %w: %s",
+			strings.Join(full, " "), err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
