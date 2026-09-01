@@ -1,0 +1,28 @@
+# Local settings with permissions (may contain sensitive patterns)
+.claude/settings.local.json
+.claude/command-history.log
+
+# Codex local state and overrides
+.codex/config.local.toml
+.codex/*.local.toml
+.codex/command-history.log
+
+# Local secrets (e.g. OPENROUTER_API_KEY for .codex/codex-openrouter.sh)
+.env
+.env.local
+
+# Committed on purpose (do not ignore):
+#   .claude/settings.json  .claude/skills/  .claude/agents/  .claude/scripts/  .claude/hooks/*.example
+#   .codex/config.toml  .codex/skills/  .codex/agents/  .codex/hooks/
+#   AGENTS.md  CLAUDE.md  memory-bank/
+
+# Go build artifacts
+/dist/
+/retrosaver
+*.deb
+*.test
+*.out
+
+# Go workspace
+go.work
+go.work.sum

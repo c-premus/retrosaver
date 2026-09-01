@@ -1,0 +1,18 @@
+[Unit]
+Description=retrosaver idle daemon
+Documentation=https://github.com/c-premus/retrosaver
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/retrosaver daemon
+# retrosaver takes ownership of org.gnome.desktop.session idle-delay while it
+# runs. ExecStopPost restores it whenever the service stops, including on an
+# unclean exit -- without this, a crash would leave the session with no
+# auto-lock at all.
+ExecStopPost=/usr/bin/retrosaver stop
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,16 @@
+# Seconds of idle before the screensaver starts.
+SAVER_DELAY=300
+
+# Seconds after the screensaver starts before the session locks. 0 disables.
+LOCK_AFTER=900
+
+# Seconds after locking before the display powers off. 0 disables.
+BLANK_AFTER=120
+
+# Space-separated module names never to pick. These need image assets,
+# network access, or elevated capabilities and misbehave standalone.
+EXCLUDE="webcollage vidwhacker glslideshow photopile carousel sonar"
+
+# Optional: if non-empty, pick only from this space-separated list.
+# e.g. INCLUDE="atlantis flame ifs apollonian discrete coral sierpinski"
+INCLUDE=""

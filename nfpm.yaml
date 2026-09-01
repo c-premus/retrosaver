@@ -1,0 +1,67 @@
+# nfpm packaging manifest. Built in CI by .forgejo/workflows/release.yaml:
+#   cp dist/retrosaver-linux-amd64 dist/retrosaver
+#   VERSION=1.2.3 GOARCH=amd64 nfpm pkg --packager deb --target dist/
+#
+# The binary is staged at a FIXED path because nfpm does not expand environment
+# variables inside contents[].src -- a ${GOARCH} there fails with
+# "Glob failed: no matching files". Verified against nfpm v2.47.0.
+name: retrosaver
+arch: ${GOARCH}
+version: ${VERSION}
+section: x11
+priority: optional
+maintainer: Chris <chris@example.com>
+description: |
+  Retro screensavers for GNOME on Wayland.
+  Brings back late-1990s XScreenSaver display modules (fractals, the atlantis
+  fish tank, flying toasters, spinning pipes) on GNOME desktops running
+  Wayland, where the traditional screensaver daemon no longer functions.
+  Reuses the XScreenSaver display modules Debian and Ubuntu already package and
+  supplies only the idle trigger GNOME dropped.
+vendor: Chris
+homepage: https://github.com/c-premus/retrosaver
+license: MIT
+
+depends:
+  # The display modules themselves. Hard dependencies so the tool works
+  # immediately after install: atlantis lives in -gl-extra, flame and ifs in
+  # -data-extra. Pulls roughly 40 MB including netpbm and libjpeg-turbo-progs.
+  - xscreensaver-data
+  - xscreensaver-data-extra
+  - xscreensaver-gl
+  - xscreensaver-gl-extra
+  # EWMH fullscreen/above, and pointer hiding over the saver window.
+  - wmctrl
+  - unclutter-xfixes
+
+conflicts:
+  # The xscreensaver DAEMON is the broken component: it does not work under
+  # GNOME's compositor, and it tries to autostart and emit errors. This package
+  # replaces it, so installing both is incoherent. The module DATA packages
+  # above are a separate, and required, matter.
+  - xscreensaver
+
+contents:
+  - src: ./dist/retrosaver
+    dst: /usr/bin/retrosaver
+    file_info:
+      mode: 0755
+
+  # Shipped, but deliberately NOT enabled by the package. Enabling a
+  # systemd --user unit and taking ownership of idle-delay are per-user
+  # operations needing the user's session bus; a root postinst cannot do them
+  # correctly. The user runs `retrosaver setup` instead.
+  - src: ./systemd/retrosaver.service
+    dst: /usr/lib/systemd/user/retrosaver.service
+    file_info:
+      mode: 0644
+
+  - src: ./config/retrosaver.conf.example
+    dst: /usr/share/retrosaver/retrosaver.conf.example
+    file_info:
+      mode: 0644
+
+  - src: ./LICENSE
+    dst: /usr/share/doc/retrosaver/copyright
+    file_info:
+      mode: 0644

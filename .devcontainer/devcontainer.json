@@ -1,0 +1,103 @@
+{
+    "name": "Claude Code Development",
+    "image": "mcr.microsoft.com/devcontainers/base:debian",
+    // Use host network mode - container shares host's network stack
+    "runArgs": [
+        "--network=host"
+    ],
+    // Devcontainer features - install tools the proper way
+    "features": {
+        // Common utilities: creates dev user, installs git, vim, sudo, etc.
+        "ghcr.io/devcontainers/features/common-utils:2": {
+            "installZsh": true,
+            "configureZshAsDefaultShell": true,
+            "installOhMyZsh": true,
+            "userUid": "1000",
+            "userGid": "1000",
+            "upgradePackages": true
+        },
+        // Node.js with nvm (useful for many projects + npx tools)
+        "ghcr.io/devcontainers/features/node:1": {
+            "version": "24",
+            "nodeGypDependencies": true,
+            "installYarnUsingApt": false
+        },
+        // Git with proper config for devcontainers
+        "ghcr.io/devcontainers/features/git:1": {},
+        // GitHub CLI (gh) for PR, issue, and repo management
+        "ghcr.io/devcontainers/features/github-cli:1": {
+            "installDirectlyFromGitHubRelease": true,
+            "version": "latest"
+        },
+        // Docker CLI for docker-outside-of-docker pattern
+        "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+            "version": "latest",
+            "moby": false,
+            "dockerDashComposeVersion": "v2",
+            "installDockerBuildx": true
+        },
+        // Go toolchain - this project builds a single static binary.
+        // Pinned to the 1.26 stable line (1.26.7 current). 1.27.0 is released but
+        // brand new; the feature also contributes the golang.Go VS Code extension.
+        "ghcr.io/devcontainers/features/go:1": {
+            "version": "1.26"
+        }
+    },
+    // Install jq + shellcheck, then the Claude and OpenAI Codex CLIs.
+    // jq is REQUIRED: .claude/scripts/statusline-context.sh hard-depends on it and
+    // degrades to "Claude | jq required" without it. shellcheck covers tests/smoke.sh.
+    "postCreateCommand": "sudo apt-get update && sudo apt-get install -y jq shellcheck && curl -fsSL https://claude.ai/install.sh | bash && curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
+    // Make scripts executable; persist VS Code's git credential helper globally
+    // so all processes (Claude Code, background tasks) can authenticate via HTTPS;
+    // authenticate gh CLI from VS Code's credential helper if not already logged in;
+    // configure gh as a git credential helper (belt-and-suspenders with VS Code's)
+    "postAttachCommand": "chmod +x .claude/scripts/*.sh 2>/dev/null; chmod +x .codex/hooks/*.sh 2>/dev/null; CRED=$(git config credential.helper 2>/dev/null) && [ -n \"$CRED\" ] && git config --global credential.helper \"$CRED\" || true; if ! gh auth status &>/dev/null; then _GHT=${GH_TOKEN:-$(printf 'host=github.com\\nprotocol=https\\n\\n' | git credential fill 2>/dev/null | awk -F= '/^password=/{print $2}')}; [ -n \"$_GHT\" ] && printf '%s' \"$_GHT\" | gh auth login --with-token 2>/dev/null; unset _GHT; fi; gh auth setup-git 2>/dev/null || true",
+    // ============================================================================
+    // PORT FORWARDING CONFIGURATION FOR HOST NETWORK MODE
+    // ============================================================================
+    // With network_mode: host, the container shares the host's network stack.
+    // localhost:PORT in container = localhost:PORT on host. No forwarding needed.
+    //
+    // PROBLEM: VS Code has TWO port forwarding mechanisms:
+    //   1. Auto-detection (respects onAutoForward: "ignore")
+    //   2. User-initiated (clicking localhost links in terminal - IGNORES all settings)
+    //
+    // SOLUTION: Disable auto-forwarding entirely for host network mode.
+    // ============================================================================
+    "forwardPorts": [],
+    "otherPortsAttributes": {
+        "onAutoForward": "ignore"
+    },
+    "portsAttributes": {
+        "3000-9999": {
+            "label": "Application Ports",
+            "onAutoForward": "ignore"
+        },
+        "10000-65535": {
+            "label": "Dynamic/Ephemeral",
+            "onAutoForward": "ignore"
+        }
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "mikestead.dotenv",
+                "editorconfig.editorconfig",
+                "bierner.markdown-mermaid",
+                "ms-azuretools.vscode-docker"
+            ],
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "zsh",
+                "editor.formatOnSave": true,
+                "remote.autoForwardPorts": false,
+                "remote.restoreForwardedPorts": false,
+                "remote.autoForwardPortsSource": "output"
+            }
+        }
+    },
+    // SSH agent forwarding: VS Code forwards Windows OpenSSH Agent automatically
+    // Bitwarden/1Password register with Windows OpenSSH, which VS Code handles
+    //
+    // GitHub auth: VS Code's credential helper (postAttachCommand) authenticates gh CLI.
+    "containerEnv": {}
+}
