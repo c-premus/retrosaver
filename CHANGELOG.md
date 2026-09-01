@@ -11,6 +11,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Releasing no longer races with itself. `version-release.yaml` both pushed the tag *and*
+  dispatched `release.yaml`, and on Forgejo 16 the tag push fires `release.yaml` on its
+  own — so two runs competed for one release and the loser died with `KeyError: 'id'`
+  trying to create a release that already existed. The tag push is now the only trigger.
+- Creating a release is idempotent and fails loudly. It reuses an existing release for the
+  tag, skips assets already attached, uses `--fail-with-body` on every call, and asserts
+  four assets before finishing. Previously the upload `curl` had no `--fail`, so a 401
+  printed its status code and the job still went green with an assetless release.
+
 ## [0.0.3] - 2026-09-01
 
 ### Fixed
