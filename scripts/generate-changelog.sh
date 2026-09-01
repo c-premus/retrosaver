@@ -85,28 +85,25 @@ strip_type() {
 
 # subjects_matching prints the cleaned subjects for one conventional type.
 subjects_matching() {
-    local pattern="$1" line hash subject
+    local pattern="$1" line
     { list_commits | grep -E "$pattern" || true; } | while IFS= read -r line; do
         [ -z "$line" ] && continue
-        hash=${line%% *}
-        subject=${line#* }
-        printf '%s\n' "$(strip_type "$subject")"
-        unset hash
+        # Drop the leading hash; only the subject reaches the changelog.
+        printf '%s\n' "$(strip_type "${line#* }")"
     done
 }
 
 breaking_subjects() {
-    local subj body line hash subject
+    local subj body line
     subj=$(list_commits | grep -E '^[0-9a-f]+ [a-z]+(\([^)]*\))?!:' || true)
     body=$(list_breaking_body)
+    # awk de-duplicates on the hash: a commit can be breaking by both its
+    # subject marker and its body, and must appear once.
     { printf '%s\n%s\n' "$subj" "$body" | grep -vE '^$' || true; } \
         | awk '!seen[$1]++' \
         | while IFS= read -r line; do
             [ -z "$line" ] && continue
-            hash=${line%% *}
-            subject=${line#* }
-            printf '%s\n' "$(strip_type "$subject")"
-            unset hash
+            printf '%s\n' "$(strip_type "${line#* }")"
         done
 }
 
