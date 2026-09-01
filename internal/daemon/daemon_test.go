@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/c-premus/retrosaver/internal/config"
 	"github.com/c-premus/retrosaver/internal/idle"
+	"github.com/c-premus/retrosaver/internal/modules"
 )
 
 // The tests drive the state machine through fakes and synchronise on the
@@ -78,6 +81,14 @@ func (f *fakeMonitor) Close() error {
 	defer f.mu.Unlock()
 	f.closed = true
 	return nil
+}
+
+// isClosed reads the flag under the fake's own mutex. Reading f.closed
+// directly races Run's deferred Close on its own goroutine.
+func (f *fakeMonitor) isClosed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed
 }
 
 func (f *fakeMonitor) intervals() []time.Duration {
@@ -152,6 +163,25 @@ func (l *fakeLauncher) SetFilters(include, exclude []string) {
 
 // lastFilters returns the include/exclude pair from the most recent
 // SetFilters call, or nil if it was never called.
+// saverAt returns the nth saver the launcher produced, under the fake's own
+// mutex: Launch appends from the daemon's goroutine while the test reads.
+func (l *fakeLauncher) saverAt(t *testing.T, n int) *fakeSaver {
+	t.Helper()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if n >= len(l.savers) {
+		t.Fatalf("launcher produced %d savers, want more than %d", len(l.savers), n)
+	}
+	return l.savers[n]
+}
+
+// saverCount reports how many savers the launcher produced.
+func (l *fakeLauncher) saverCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.savers)
+}
+
 func (l *fakeLauncher) lastFilters() ([]string, []string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -289,6 +319,10 @@ type harness struct {
 
 	cancel context.CancelFunc
 	errc   chan error
+
+	// finished and runErr memoise Run's return, so result is idempotent.
+	finished bool
+	runErr   error
 }
 
 func defaultConfig() config.Config {
@@ -314,9 +348,6 @@ func start(t *testing.T, cfg config.Config, tweak ...func(*harness)) *harness {
 		nextCfg: cfg,
 	}
 	h.d = New(cfg)
-	for _, fn := range tweak {
-		fn(h)
-	}
 
 	h.d.connect = func() (idleMonitor, error) { return h.mon, nil }
 	h.d.modules = h.lau
@@ -331,9 +362,25 @@ func start(t *testing.T, cfg config.Config, tweak ...func(*harness)) *harness {
 		return h.nextCfg, h.loadErr
 	}
 
+	// After the defaults, not before: a tweak that replaces one of the fields
+	// set above -- d.backstop, say -- would otherwise be silently overwritten.
+	// Still before Run starts, so nothing here races the daemon's goroutine.
+	for _, fn := range tweak {
+		fn(h)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
 	go func() { h.errc <- h.d.Run(ctx) }()
+
+	// Unconditional teardown. Without it a test that never calls stop leaves
+	// Run and its goroutines running past the end of the test -- which one
+	// test genuinely did -- and every other test needs a
+	// `defer h.stop() //nolint:errcheck` purely to avoid that.
+	t.Cleanup(func() {
+		cancel()
+		_ = h.result()
+	})
 
 	h.want("armed")
 	return h
@@ -380,17 +427,29 @@ func (h *harness) fire(id idle.WatchID, tag string) {
 	h.want(tag)
 }
 
+// result waits for Run to return, at most once.
+//
+// Repeat calls hand back the same error, which is what lets start register an
+// unconditional cleanup while a test still asserts the error itself.
+func (h *harness) result() error {
+	h.t.Helper()
+	if h.finished {
+		return h.runErr
+	}
+	select {
+	case err := <-h.errc:
+		h.runErr, h.finished = err, true
+	case <-time.After(traceTimeout):
+		h.t.Fatal("Run did not return")
+	}
+	return h.runErr
+}
+
 // stop cancels Run and returns its error.
 func (h *harness) stop() error {
 	h.t.Helper()
 	h.cancel()
-	select {
-	case err := <-h.errc:
-		return err
-	case <-time.After(traceTimeout):
-		h.t.Fatal("Run did not return after ctx cancel")
-		return nil
-	}
+	return h.result()
 }
 
 // Watch IDs are handed out in arming order by fakeMonitor:
@@ -413,7 +472,6 @@ const (
 
 func TestArmsAllFourWatchesAtTheRightThresholds(t *testing.T) {
 	h := start(t, defaultConfig())
-	defer h.stop() //nolint:errcheck // asserted elsewhere
 
 	want := []time.Duration{
 		300 * time.Second,  // saver
@@ -438,7 +496,6 @@ func TestLockDisabledArmsOnlySaverAndActive(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.LockAfter = 0
 	h := start(t, cfg)
-	defer h.stop() //nolint:errcheck
 
 	want := []time.Duration{300 * time.Second}
 	if got := h.mon.intervals(); !slices.Equal(got, want) {
@@ -452,7 +509,6 @@ func TestBlankDisabledWhenLockDisabled(t *testing.T) {
 	cfg.LockAfter = 0
 	cfg.BlankAfter = 120 * time.Second
 	h := start(t, cfg)
-	defer h.stop() //nolint:errcheck
 
 	if got := h.mon.intervals(); len(got) != 1 {
 		t.Errorf("idle watch thresholds = %v, want only the saver watch", got)
@@ -463,7 +519,6 @@ func TestBlankAfterZeroArmsSaverAndLockOnly(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.BlankAfter = 0
 	h := start(t, cfg)
-	defer h.stop() //nolint:errcheck
 
 	want := []time.Duration{300 * time.Second, 1200 * time.Second}
 	if got := h.mon.intervals(); !slices.Equal(got, want) {
@@ -478,7 +533,7 @@ func TestFullSequenceSaverThenLockThenBlank(t *testing.T) {
 	h.want("launch:ok:atlantis")
 
 	h.fire(wLock, "watch:lock")
-	if got := h.lau.savers[0].stopCount(); got != 1 {
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 1 {
 		t.Errorf("module stopped %d times at the lock stage, want 1", got)
 	}
 	if got := h.sess.lockCount(); got != 1 {
@@ -499,28 +554,26 @@ func TestFullSequenceSaverThenLockThenBlank(t *testing.T) {
 // The module must be stopped before the lock screen appears, not after.
 func TestLockStopsTheModuleBeforeLocking(t *testing.T) {
 	h := start(t, defaultConfig())
-	defer h.stop() //nolint:errcheck
 
 	h.fire(wSaver, "watch:saver")
 	h.want("launch:ok:atlantis")
 
 	h.fire(wLock, "watch:lock")
 
-	if h.lau.savers[0].stopCount() == 0 {
+	if h.lau.saverAt(t, 0).stopCount() == 0 {
 		t.Error("the lock stage locked without stopping the module")
 	}
 }
 
 func TestUserActiveTearsDownAndReArms(t *testing.T) {
 	h := start(t, defaultConfig())
-	defer h.stop() //nolint:errcheck
 
 	h.fire(wSaver, "watch:saver")
 	h.want("launch:ok:atlantis")
 
 	h.fire(wActive, "watch:active")
 
-	if got := h.lau.savers[0].stopCount(); got != 1 {
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 1 {
 		t.Errorf("module stopped %d times on user activity, want 1", got)
 	}
 	// Re-arming drops every watch and registers a fresh set, which is correct
@@ -550,7 +603,6 @@ func TestUserActiveTearsDownAndReArms(t *testing.T) {
 // idle by definition -- and never from the handler.
 func TestUserActiveWatchIsNotReArmedImmediately(t *testing.T) {
 	h := start(t, defaultConfig())
-	defer h.stop() //nolint:errcheck
 
 	if got := h.mon.activeWatches(); len(got) != 0 {
 		t.Fatalf("user-active watches = %v, want none before a stage runs", got)
@@ -581,7 +633,6 @@ func TestUserActiveWatchIsNotReArmedImmediately(t *testing.T) {
 // or the daemon would never notice the user coming back.
 func TestLockStageArmsTheUserActiveWatchToo(t *testing.T) {
 	h := start(t, defaultConfig())
-	defer h.stop() //nolint:errcheck
 
 	h.fire(wLock, "watch:lock")
 
@@ -593,7 +644,6 @@ func TestLockStageArmsTheUserActiveWatchToo(t *testing.T) {
 // After a reset the machine must run a whole second cycle.
 func TestSecondCycleAfterReset(t *testing.T) {
 	h := start(t, defaultConfig())
-	defer h.stop() //nolint:errcheck
 
 	h.fire(wSaver, "watch:saver")
 	h.want("launch:ok:atlantis")
@@ -620,7 +670,6 @@ func TestSecondCycleAfterReset(t *testing.T) {
 // blanking for the next cycle.
 func TestUserActiveAfterBlankRestoresIdleDelayToZero(t *testing.T) {
 	h := start(t, defaultConfig())
-	defer h.stop() //nolint:errcheck
 
 	h.fire(wSaver, "watch:saver")
 	h.want("launch:ok:atlantis")
@@ -639,7 +688,6 @@ func TestRetriesOnceWithADifferentModule(t *testing.T) {
 		h.lau.names = []string{"atlantis", "flame"}
 		h.lau.failures = map[string]error{"atlantis": errors.New("no GL context")}
 	})
-	defer h.stop() //nolint:errcheck
 
 	h.fire(wSaver, "watch:saver")
 	h.want("launch:failed:atlantis")
@@ -662,7 +710,6 @@ func TestRetriesOnlyOnce(t *testing.T) {
 			"flame":    errors.New("boom"),
 		}
 	})
-	defer h.stop() //nolint:errcheck
 
 	h.fire(wSaver, "watch:saver")
 	h.want("launch:failed:atlantis")
@@ -686,7 +733,6 @@ func TestLockStillFiresWhenNoModuleIsAvailable(t *testing.T) {
 	h := start(t, defaultConfig(), func(h *harness) {
 		h.lau.pickErr = errors.New("no modules available")
 	})
-	defer h.stop() //nolint:errcheck
 
 	// startLaunch traces from inside the saver handler, and handleWatch
 	// traces only once the handler has returned, so the inner tag arrives
@@ -709,7 +755,6 @@ func TestUserActiveDuringLaunchDiscardsTheLateSaver(t *testing.T) {
 		h.lau.release = release
 		h.lau.ignoreCancel = true
 	})
-	defer h.stop() //nolint:errcheck
 
 	h.fire(wSaver, "watch:saver")
 	// The launch is now blocked inside fakeLauncher.Launch.
@@ -720,10 +765,10 @@ func TestUserActiveDuringLaunchDiscardsTheLateSaver(t *testing.T) {
 	close(release)
 	h.want("launch:discarded")
 
-	if len(h.lau.savers) != 1 {
-		t.Fatalf("launcher produced %d savers, want 1", len(h.lau.savers))
+	if h.lau.saverCount() != 1 {
+		t.Fatalf("launcher produced %d savers, want 1", h.lau.saverCount())
 	}
-	if got := h.lau.savers[0].stopCount(); got != 1 {
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 1 {
 		t.Errorf("the late saver was stopped %d times, want 1", got)
 	}
 }
@@ -735,7 +780,6 @@ func TestLockDuringLaunchDiscardsTheLateSaver(t *testing.T) {
 		h.lau.release = release
 		h.lau.ignoreCancel = true
 	})
-	defer h.stop() //nolint:errcheck
 
 	h.fire(wSaver, "watch:saver")
 	h.fire(wLock, "watch:lock")
@@ -743,7 +787,7 @@ func TestLockDuringLaunchDiscardsTheLateSaver(t *testing.T) {
 	close(release)
 	h.want("launch:discarded")
 
-	if got := h.lau.savers[0].stopCount(); got != 1 {
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 1 {
 		t.Errorf("the late saver was stopped %d times, want 1", got)
 	}
 	if got := h.sess.lockCount(); got != 1 {
@@ -754,7 +798,6 @@ func TestLockDuringLaunchDiscardsTheLateSaver(t *testing.T) {
 // Stages only advance, so a repeat of the same watch is a no-op.
 func TestDuplicateSaverFireLaunchesOnce(t *testing.T) {
 	h := start(t, defaultConfig())
-	defer h.stop() //nolint:errcheck
 
 	h.fire(wSaver, "watch:saver")
 	h.want("launch:ok:atlantis")
@@ -769,7 +812,6 @@ func TestDuplicateSaverFireLaunchesOnce(t *testing.T) {
 // rather than dispatched to an arbitrary stage.
 func TestUnknownWatchIDIsIgnored(t *testing.T) {
 	h := start(t, defaultConfig())
-	defer h.stop() //nolint:errcheck
 
 	h.mon.fired <- idle.WatchID(999)
 
@@ -787,13 +829,13 @@ func TestCtxCancelStopsTheSaverAndRestoresIdleDelay(t *testing.T) {
 	if err := h.stop(); err != nil {
 		t.Errorf("Run() = %v, want nil on ctx cancel", err)
 	}
-	if got := h.lau.savers[0].stopCount(); got == 0 {
+	if got := h.lau.saverAt(t, 0).stopCount(); got == 0 {
 		t.Error("shutdown left the module running")
 	}
 	if got := h.sess.restoreCount(); got != 1 {
 		t.Errorf("RestoreIdleDelay called %d times on shutdown, want 1", got)
 	}
-	if !h.mon.closed {
+	if !h.mon.isClosed() {
 		t.Error("shutdown did not close the idle monitor")
 	}
 }
@@ -805,13 +847,10 @@ func TestClosedFiredChannelIsAnError(t *testing.T) {
 
 	close(h.mon.fired)
 
-	select {
-	case err := <-h.errc:
-		if err == nil {
-			t.Fatal("Run() = nil when the bus connection dropped, want an error")
-		}
-	case <-time.After(traceTimeout):
-		t.Fatal("Run did not return after the Fired channel closed")
+	// result, not a bare receive on h.errc: draining the channel behind the
+	// harness leaves the cleanup waiting on a value that will never come.
+	if err := h.waitErr(); err == nil {
+		t.Fatal("Run() = nil when the bus connection dropped, want an error")
 	}
 	if got := h.sess.restoreCount(); got != 1 {
 		t.Errorf("RestoreIdleDelay called %d times, want 1 even on the error path", got)
@@ -850,8 +889,11 @@ func TestIdleDelayTakeoverFailureAborts(t *testing.T) {
 
 func TestShutdownRunsTheBackstop(t *testing.T) {
 	var called int
-	h := start(t, defaultConfig())
-	h.d.backstop = func() error { called++; return nil }
+	// Installed through the tweak hook, which runs before Run starts. Writing
+	// d.backstop afterwards races the daemon's own goroutine reading it.
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.d.backstop = func() error { called++; return nil }
+	})
 
 	if err := h.stop(); err != nil {
 		t.Fatalf("Run() = %v", err)
@@ -865,7 +907,6 @@ func TestShutdownRunsTheBackstop(t *testing.T) {
 
 func TestReloadReArmsAtTheNewThresholds(t *testing.T) {
 	h := start(t, defaultConfig())
-	defer h.stop() //nolint:errcheck
 
 	cfg := config.Config{
 		SaverDelay: 120 * time.Second,
@@ -892,7 +933,6 @@ func TestReloadReArmsAtTheNewThresholds(t *testing.T) {
 // selection on the stale lists.
 func TestReloadRepointsTheLauncher(t *testing.T) {
 	h := start(t, defaultConfig())
-	defer h.stop() //nolint:errcheck
 
 	cfg := defaultConfig()
 	cfg.Include = []string{"flame", "ifs"}
@@ -919,7 +959,6 @@ func TestReloadRepointsTheLauncher(t *testing.T) {
 
 func TestReloadStopsARunningModule(t *testing.T) {
 	h := start(t, defaultConfig())
-	defer h.stop() //nolint:errcheck
 
 	h.fire(wSaver, "watch:saver")
 	h.want("launch:ok:atlantis")
@@ -928,7 +967,7 @@ func TestReloadStopsARunningModule(t *testing.T) {
 	cfg.SaverDelay = 60 * time.Second
 	h.reload(cfg, "reload:ok")
 
-	if got := h.lau.savers[0].stopCount(); got != 1 {
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 1 {
 		t.Errorf("stopCount = %d, want 1: a reload must tear the module down", got)
 	}
 }
@@ -937,7 +976,6 @@ func TestReloadStopsARunningModule(t *testing.T) {
 // stay off with the daemon believing it is idle.
 func TestReloadRestoresIdleDelayWhenBlanked(t *testing.T) {
 	h := start(t, defaultConfig())
-	defer h.stop() //nolint:errcheck
 
 	h.fire(wSaver, "watch:saver")
 	h.want("launch:ok:atlantis")
@@ -959,7 +997,6 @@ func TestReloadRestoresIdleDelayWhenBlanked(t *testing.T) {
 // auto-lock, so a failed reload keeps the previous config and keeps running.
 func TestReloadKeepsThePreviousConfigOnError(t *testing.T) {
 	h := start(t, defaultConfig())
-	defer h.stop() //nolint:errcheck
 
 	h.fire(wSaver, "watch:saver")
 	h.want("launch:ok:atlantis")
@@ -970,7 +1007,7 @@ func TestReloadKeepsThePreviousConfigOnError(t *testing.T) {
 	if got := h.mon.intervals(); !slices.Equal(got, before) {
 		t.Errorf("intervals = %v, want them unchanged at %v", got, before)
 	}
-	if got := h.lau.savers[0].stopCount(); got != 0 {
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 0 {
 		t.Errorf("stopCount = %d, want 0: a failed reload must not tear down", got)
 	}
 	if h.d.cfg.SaverDelay != 300*time.Second {
@@ -982,7 +1019,6 @@ func TestReloadKeepsThePreviousConfigOnError(t *testing.T) {
 // down a running module for that would be visible to the user.
 func TestReloadWithAnIdenticalConfigIsANoOp(t *testing.T) {
 	h := start(t, defaultConfig())
-	defer h.stop() //nolint:errcheck
 
 	h.fire(wSaver, "watch:saver")
 	h.want("launch:ok:atlantis")
@@ -993,7 +1029,7 @@ func TestReloadWithAnIdenticalConfigIsANoOp(t *testing.T) {
 	if got := h.mon.intervals(); !slices.Equal(got, before) {
 		t.Errorf("intervals = %v, want them unchanged at %v", got, before)
 	}
-	if got := h.lau.savers[0].stopCount(); got != 0 {
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 0 {
 		t.Errorf("stopCount = %d, want 0: an unchanged reload must not tear down", got)
 	}
 }
@@ -1001,7 +1037,6 @@ func TestReloadWithAnIdenticalConfigIsANoOp(t *testing.T) {
 // Disabling a stage through a reload must drop that watch entirely.
 func TestReloadCanDisableTheLockAndBlankStages(t *testing.T) {
 	h := start(t, defaultConfig())
-	defer h.stop() //nolint:errcheck
 
 	cfg := defaultConfig()
 	cfg.LockAfter = 0
@@ -1029,13 +1064,7 @@ func (f *fakeMonitor) setAddErr(err error) {
 // waitErr waits for Run to return on its own, without cancelling the context.
 func (h *harness) waitErr() error {
 	h.t.Helper()
-	select {
-	case err := <-h.errc:
-		return err
-	case <-time.After(traceTimeout):
-		h.t.Fatal("Run did not return")
-		return nil
-	}
+	return h.result()
 }
 
 // A re-arm that fails must end Run so systemd's Restart=always produces a
@@ -1097,5 +1126,187 @@ func TestAFailedUserActiveWatchWithNoLockStageEndsRun(t *testing.T) {
 	h.mon.fired <- wSaver
 	if err := h.waitErr(); !errors.Is(err, sentinel) {
 		t.Fatalf("Run() = %v, want it to wrap %v", err, sentinel)
+	}
+}
+
+// A failed lock must not stop the sequence advancing.
+//
+// loginctl can fail transiently, and the blank stage is what still gets the
+// display off. Treating a lock error as terminal would leave a lit screen for
+// the rest of the idle period.
+func TestAFailedLockStillAdvancesToBlank(t *testing.T) {
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.sess.lockErr = errors.New("loginctl said no")
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+	h.fire(wLock, "watch:lock")
+
+	if got := h.sess.lockCount(); got != 1 {
+		t.Fatalf("Lock called %d times, want 1", got)
+	}
+
+	// The blank stage must still run despite the lock failing.
+	h.fire(wBlank, "watch:blank")
+	if got := h.sess.delays(); !slices.Contains(got, blankIdleDelay) {
+		t.Errorf("idle-delay writes = %v, want one of %d for the blank stage",
+			got, blankIdleDelay)
+	}
+}
+
+// A failed RestoreIdleDelay must not stop a clean shutdown.
+//
+// Run still returns nil on SIGTERM: the unit's ExecStopPost runs `retrosaver
+// stop`, which restores idle-delay too, and a non-zero exit here would make
+// systemd log a failure for something already handled.
+func TestShutdownSurvivesAFailedRestore(t *testing.T) {
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.sess.restoreDelay = errors.New("gsettings went away")
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	if err := h.stop(); err != nil {
+		t.Fatalf("Run() = %v, want nil: a failed restore must not fail the shutdown", err)
+	}
+	if got := h.sess.restoreCount(); got != 1 {
+		t.Errorf("RestoreIdleDelay called %d times, want 1", got)
+	}
+}
+
+// Arming fails at startup: Run must report it AND still hand the idle policy
+// back, or the session is left at idle-delay 0 with no auto-lock at all.
+func TestAFailedArmAtStartupStillRestoresIdleDelay(t *testing.T) {
+	sentinel := errors.New("no watches today")
+
+	h := &harness{
+		t:       t,
+		mon:     newFakeMonitor(),
+		lau:     &fakeLauncher{names: []string{"atlantis"}},
+		sess:    &fakeSession{},
+		trace:   make(chan string, 64),
+		errc:    make(chan error, 1),
+		reloadC: make(chan struct{}, 1),
+		nextCfg: defaultConfig(),
+	}
+	h.mon.setAddErr(sentinel)
+	h.d = New(defaultConfig())
+	h.d.connect = func() (idleMonitor, error) { return h.mon, nil }
+	h.d.modules = h.lau
+	h.d.session = h.sess
+	h.d.backstop = func() error { return nil }
+	h.d.log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	h.d.traceC = h.trace
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	err := h.d.Run(ctx)
+
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Run() = %v, want it to wrap %v", err, sentinel)
+	}
+	if got := h.sess.restoreCount(); got != 1 {
+		t.Errorf("RestoreIdleDelay called %d times, want 1: the session was left at idle-delay 0", got)
+	}
+}
+
+// ------------------------------------------------- realLauncher (not a fake)
+
+// fakeModuleTree builds a directory pair that modules.Finder will discover:
+// an XML config and a matching executable for each name.
+func fakeModuleTree(t *testing.T, names ...string) *modules.Finder {
+	t.Helper()
+	root := t.TempDir()
+	cfgDir := filepath.Join(root, "config")
+	binDir := filepath.Join(root, "bin")
+	for _, d := range []string{cfgDir, binDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, n := range names {
+		if err := os.WriteFile(filepath.Join(cfgDir, n+".xml"), []byte("<screensaver/>"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(binDir, n), []byte("#!/bin/true\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return &modules.Finder{ConfigDir: cfgDir, BinDir: binDir}
+}
+
+// Pick must honour include, exclude and the per-cycle avoid list.
+func TestRealLauncherPickHonoursItsFilters(t *testing.T) {
+	f := fakeModuleTree(t, "alpha", "beta", "gamma", "delta")
+
+	l := &realLauncher{finder: f, exclude: []string{"delta"}}
+	for range 40 {
+		got, err := l.Pick("gamma")
+		if err != nil {
+			t.Fatalf("Pick() = %v", err)
+		}
+		if got == "delta" {
+			t.Fatal("Pick returned an excluded module")
+		}
+		if got == "gamma" {
+			t.Fatal("Pick returned a module it was told to avoid")
+		}
+	}
+
+	// include narrows to exactly one candidate, so the result is determinate.
+	l.SetFilters([]string{"beta"}, nil)
+	got, err := l.Pick()
+	if err != nil {
+		t.Fatalf("Pick() = %v", err)
+	}
+	if got != "beta" {
+		t.Errorf("Pick() = %q, want \"beta\": include was not applied", got)
+	}
+}
+
+// SetFilters must re-point what Pick selects from, not just record the values.
+// This is the launcher half of the reload contract; TestReloadRepointsTheLauncher
+// only proves SetFilters is called.
+func TestRealLauncherSetFiltersTakesEffect(t *testing.T) {
+	f := fakeModuleTree(t, "alpha", "beta")
+
+	l := &realLauncher{finder: f, include: []string{"alpha"}}
+	if got, err := l.Pick(); err != nil || got != "alpha" {
+		t.Fatalf("Pick() = %q, %v; want \"alpha\", nil", got, err)
+	}
+
+	l.SetFilters(nil, []string{"alpha"})
+	if got, err := l.Pick(); err != nil || got != "beta" {
+		t.Errorf("Pick() after SetFilters = %q, %v; want \"beta\", nil", got, err)
+	}
+}
+
+// Pick must not write through its exclude slice into the caller's array.
+//
+// Pick appends the avoid list to l.exclude. Without the slices.Clone it would
+// append in place whenever the slice has spare capacity, scribbling on the
+// backing array that config.Config.Exclude still refers to -- and nothing in
+// the daemon would fail visibly, which is exactly what makes it worth pinning.
+func TestRealLauncherPickDoesNotWriteThroughExclude(t *testing.T) {
+	f := fakeModuleTree(t, "alpha", "beta", "gamma")
+
+	// Spare capacity is what makes an in-place append possible at all.
+	backing := make([]string, 1, 4)
+	backing[0] = "gamma"
+	l := &realLauncher{finder: f, exclude: backing}
+
+	if _, err := l.Pick("beta"); err != nil {
+		t.Fatalf("Pick() = %v", err)
+	}
+
+	// A view of the whole array. Without the clone, "beta" now sits at index 1.
+	full := backing[:cap(backing)]
+	for i, got := range full[1:] {
+		if got != "" {
+			t.Errorf("Pick wrote %q into the caller's backing array at index %d",
+				got, i+1)
+		}
 	}
 }

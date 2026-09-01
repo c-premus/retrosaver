@@ -8,10 +8,14 @@
 //
 // It exists so the daemon can pick up an edited config without a restart. It
 // touches no part of the GNOME stack -- it is a thin wrapper over the Linux
-// inotify syscalls in golang.org/x/sys/unix, which is already in the module
-// graph as an indirect dependency of godbus. Using it directly keeps the
-// "one intended dependency" rule intact and stays pure Go, so CGO_ENABLED=0
-// still yields a static binary.
+// inotify syscalls in golang.org/x/sys/unix.
+//
+// That import makes x/sys a direct dependency, which is deliberate and
+// recorded in AGENTS.md: the project's rule is two pure-Go dependencies, not
+// one. The stdlib syscall package is frozen and its own documentation points
+// callers at x/sys, so hand-rolling these calls to avoid the requirement would
+// trade an endorsed dependency for a discouraged one. x/sys is pure Go, so
+// CGO_ENABLED=0 still yields a static binary either way.
 package watch
 
 import (

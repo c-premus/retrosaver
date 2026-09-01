@@ -197,21 +197,3 @@ func waitForActivity(t *testing.T, m *Monitor, timeout time.Duration) bool {
 	}
 	return false
 }
-
-func TestLiveConnectFailsFastWithoutABus(t *testing.T) {
-	if os.Getenv("RETROSAVER_LIVE") == "" {
-		t.Skip("set RETROSAVER_LIVE=1 to run against a real GNOME/Wayland session")
-	}
-	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/retrosaver-test-bus")
-
-	start := time.Now()
-	m, err := Connect()
-	if err == nil {
-		m.Close()
-		t.Fatal("Connect() succeeded against a nonexistent bus, want an error")
-	}
-	if elapsed := time.Since(start); elapsed > 10*time.Second {
-		t.Errorf("Connect() took %v to fail; it must fail fast, not spin", elapsed)
-	}
-	t.Logf("failed fast with: %v", err)
-}

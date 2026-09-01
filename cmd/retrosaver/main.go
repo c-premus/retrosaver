@@ -84,6 +84,16 @@ func versionString() string {
 	return fmt.Sprintf("%s (%s, %s)", version, rev, when)
 }
 
+// stopSignals are the signals that shut the daemon down, via
+// signal.NotifyContext, so it tears down cleanly and restores idle-delay.
+//
+// SIGHUP is deliberately absent and must stay absent. NotifyContext cancels
+// the context on any signal it is given, so adding SIGHUP here would turn
+// every `systemctl --user reload` into a shutdown. Reload gets its own
+// signal.Notify channel in reloadTriggers.
+// TestStopSignalsExcludeSIGHUP is what stops that regressing.
+var stopSignals = []os.Signal{syscall.SIGTERM, syscall.SIGINT}
+
 // logLevelEnv names the environment variable that sets the daemon's log level.
 // Put it in the unit with Environment=RETROSAVER_LOG_LEVEL=debug.
 const logLevelEnv = "RETROSAVER_LOG_LEVEL"
@@ -194,10 +204,10 @@ func loadConfig() (config.Config, error) {
 }
 
 func cmdDaemon(args []string) error {
-	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	fset := flag.NewFlagSet("daemon", flag.ExitOnError)
+	// flag.ExitOnError: Parse exits the process on a bad flag, so it never
+	// returns a non-nil error here and checking one is dead code.
+	_ = fset.Parse(args)
 
 	setupLogging()
 
@@ -212,10 +222,7 @@ func cmdDaemon(args []string) error {
 		slog.Error("config is unusable, carrying on with the defaults", "err", err)
 	}
 
-	// SIGTERM and SIGINT must tear down cleanly and restore idle-delay.
-	// SIGHUP deliberately does NOT go through NotifyContext: that cancels the
-	// context, so a reload would stop the daemon instead of re-reading.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	ctx, stop := signal.NotifyContext(context.Background(), stopSignals...)
 	defer stop()
 
 	d := daemon.New(cfg)
@@ -269,10 +276,10 @@ func reloadTriggers(ctx context.Context) <-chan struct{} {
 }
 
 func cmdRun(args []string) error {
-	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	fset := flag.NewFlagSet("run", flag.ExitOnError)
+	// flag.ExitOnError: Parse exits the process on a bad flag, so it never
+	// returns a non-nil error here and checking one is dead code.
+	_ = fset.Parse(args)
 
 	cfg, err := loadConfig()
 	if err != nil {
@@ -288,7 +295,7 @@ func cmdRun(args []string) error {
 	}
 
 	finder := modules.NewFinder()
-	name := fs.Arg(0)
+	name := fset.Arg(0)
 	if name == "" {
 		if name, err = finder.Pick(cfg.Include, cfg.Exclude); err != nil {
 			return err
@@ -318,12 +325,12 @@ func cmdRun(args []string) error {
 }
 
 func cmdStop(args []string) error {
-	fs := flag.NewFlagSet("stop", flag.ExitOnError)
-	keepIdleDelay := fs.Bool("keep-idle-delay", false,
+	fset := flag.NewFlagSet("stop", flag.ExitOnError)
+	keepIdleDelay := fset.Bool("keep-idle-delay", false,
 		"do not restore idle-delay (used by the daemon between stages)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	// flag.ExitOnError: Parse exits the process on a bad flag, so it never
+	// returns a non-nil error here and checking one is dead code.
+	_ = fset.Parse(args)
 
 	// StopRunning treats "nothing was running" as success: stop is the panic
 	// button and must be safe to run at any time.
@@ -337,10 +344,10 @@ func cmdStop(args []string) error {
 }
 
 func cmdList(args []string) error {
-	fs := flag.NewFlagSet("list", flag.ExitOnError)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	fset := flag.NewFlagSet("list", flag.ExitOnError)
+	// flag.ExitOnError: Parse exits the process on a bad flag, so it never
+	// returns a non-nil error here and checking one is dead code.
+	_ = fset.Parse(args)
 
 	cfg, err := loadConfig()
 	if err != nil {
@@ -358,16 +365,22 @@ func cmdList(args []string) error {
 }
 
 const (
-	unitName          = "retrosaver.service"
-	packagedUnitPath  = "/usr/lib/systemd/user/" + unitName
-	exampleConfigPath = "/usr/share/retrosaver/retrosaver.conf.example"
+	unitName         = "retrosaver.service"
+	packagedUnitPath = "/usr/lib/systemd/user/" + unitName
 )
 
+// exampleConfigPath is the packaged example config that setup prefers over the
+// compiled-in default. It is a var, not a const, so tests can point it at a
+// path they control: as a const, any test touching installConfig silently
+// reads the real installed file whenever the .deb happens to be present, and
+// then asserts different content on a packaging host than in the devcontainer.
+var exampleConfigPath = "/usr/share/retrosaver/retrosaver.conf.example"
+
 func cmdSetup(args []string) error {
-	fs := flag.NewFlagSet("setup", flag.ExitOnError)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	fset := flag.NewFlagSet("setup", flag.ExitOnError)
+	// flag.ExitOnError: Parse exits the process on a bad flag, so it never
+	// returns a non-nil error here and checking one is dead code.
+	_ = fset.Parse(args)
 
 	if err := preflight(); err != nil {
 		return err
@@ -419,10 +432,10 @@ func cmdSetup(args []string) error {
 }
 
 func cmdTeardown(args []string) error {
-	fs := flag.NewFlagSet("teardown", flag.ExitOnError)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+	fset := flag.NewFlagSet("teardown", flag.ExitOnError)
+	// flag.ExitOnError: Parse exits the process on a bad flag, so it never
+	// returns a non-nil error here and checking one is dead code.
+	_ = fset.Parse(args)
 
 	// Disable first so the unit cannot restart mid-teardown. A unit that was
 	// never enabled is not an error worth aborting for.

@@ -52,15 +52,20 @@ INCLUDE='atlantis flame ifs'
 // The config file must be parsed, never executed. A line that would be a
 // command substitution in shell has to survive as inert text.
 func TestParseDoesNotEvaluateShell(t *testing.T) {
+	// A path under the test's own directory, not a fixed /tmp name: a leftover
+	// file from an earlier run, another checkout, or another user would
+	// otherwise make a perfectly correct parser fail this test forever.
+	canary := filepath.Join(t.TempDir(), "pwned")
+	payload := "$(touch " + canary + ")"
+
 	cfg := Defaults()
-	err := parse(strings.NewReader("INCLUDE=\"$(touch /tmp/retrosaver-pwned)\"\n"), &cfg)
-	if err != nil {
+	if err := parse(strings.NewReader("INCLUDE=\""+payload+"\"\n"), &cfg); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if got := strings.Join(cfg.Include, " "); got != "$(touch /tmp/retrosaver-pwned)" {
+	if got := strings.Join(cfg.Include, " "); got != payload {
 		t.Errorf("Include = %q, want the literal text unevaluated", got)
 	}
-	if _, err := os.Stat("/tmp/retrosaver-pwned"); err == nil {
+	if _, err := os.Stat(canary); err == nil {
 		t.Fatal("parser executed the config file")
 	}
 }
