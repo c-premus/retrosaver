@@ -64,9 +64,7 @@ sudo install -d /etc/apt/keyrings
 curl -fsSL https://git.example.com/api/packages/chris/debian/repository.key \
   | sudo tee /etc/apt/keyrings/forgejo-chris.asc > /dev/null
 
-echo "deb [signed-by=/etc/apt/keyrings/forgejo-chris.asc] \
-https://git.example.com/api/packages/chris/debian stable main" \
-  | sudo tee /etc/apt/sources.list.d/retrosaver.list > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/forgejo-chris.asc] https://git.example.com/api/packages/chris/debian stable main" | sudo tee /etc/apt/sources.list.d/retrosaver.list > /dev/null
 
 sudo apt update
 sudo apt install retrosaver
