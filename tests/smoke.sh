@@ -89,7 +89,7 @@ if command -v gdbus >/dev/null 2>&1; then
         --dest org.gnome.Mutter.IdleMonitor \
         --object-path /org/gnome/Mutter/IdleMonitor/Core \
         --method org.gnome.Mutter.IdleMonitor.GetIdletime 2>/dev/null \
-        | grep -oE '[0-9]+' || true)"
+        | sed -n 's/.*uint64 \([0-9]\+\).*/\1/p' || true)"
     if [ -n "$idle" ]; then
         ok "org.gnome.Mutter.IdleMonitor GetIdletime returned ${idle}ms"
     else
