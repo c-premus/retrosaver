@@ -11,6 +11,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-09-01
+
 ### Added
 
 - The daemon re-reads its configuration without a restart. It watches
@@ -61,5 +63,6 @@ First release.
 - GNOME on Wayland only. KDE and wlroots support the Wayland idle protocols, so upstream
   xscreensaver 6.11+ works there natively.
 
-[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/c-premus/retrosaver/releases/tag/v0.0.2
 [0.0.1]: https://github.com/c-premus/retrosaver/releases/tag/v0.0.1
