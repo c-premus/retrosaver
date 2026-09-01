@@ -64,15 +64,28 @@ sudo install -d /etc/apt/keyrings
 curl -fsSL https://git.example.com/api/packages/chris/debian/repository.key \
   | sudo tee /etc/apt/keyrings/forgejo-chris.asc > /dev/null
 
-echo "deb [signed-by=/etc/apt/keyrings/forgejo-chris.asc] https://git.example.com/api/packages/chris/debian stable main" | sudo tee /etc/apt/sources.list.d/retrosaver.list > /dev/null
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/forgejo-chris.asc] https://git.example.com/api/packages/chris/debian stable main" | sudo tee /etc/apt/sources.list.d/retrosaver.list > /dev/null
 
 sudo apt update
 sudo apt install retrosaver
 retrosaver setup
 ```
 
-`amd64` and `arm64` are both published; apt picks the right one. The single
-`stable` distribution is deliberate and works on any Debian or Ubuntu release —
+`amd64` and `arm64` are both published, and `arch=` pins the entry to the one
+you are running. That matters only if you have a foreign architecture enabled —
+`i386`, for Steam or Wine, is the usual reason. Without the pin, apt asks this
+repository for an `i386` index it does not publish and says so:
+
+```text
+Notice: Skipping acquire of configured file 'main/binary-i386/Packages' as
+repository '.../chris/debian stable InRelease' doesn't support architecture 'i386'
+```
+
+That is a notice, not an error — apt installs the `amd64` package regardless —
+but the pin keeps it quiet. To silence it on an existing install, re-run the
+`echo` above.
+
+The single `stable` distribution is deliberate and works on any Debian or Ubuntu release —
 the binary is static and every dependency below exists across all of them, so
 per-codename repositories would be four index trees over one identical package.
 
