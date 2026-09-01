@@ -186,7 +186,9 @@ func dispatch(cmd string, args []string) error {
 func loadConfig() (config.Config, error) {
 	path, err := config.UserConfigPath()
 	if err != nil {
-		return config.Config{}, err
+		// Defaults, not a zero Config: callers are entitled to use the value
+		// whatever the error, and a zero SaverDelay would arm a watch at 0ms.
+		return config.Defaults(), err
 	}
 	return config.Load(path)
 }

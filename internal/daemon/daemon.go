@@ -140,7 +140,9 @@ func (d *Daemon) logArmed(msg string) {
 func loadUserConfig() (config.Config, error) {
 	path, err := config.UserConfigPath()
 	if err != nil {
-		return config.Config{}, err
+		// Defaults, not a zero Config, so the "usable whatever the error"
+		// contract config.Load documents holds all the way up.
+		return config.Defaults(), err
 	}
 	return config.Load(path)
 }
@@ -495,8 +497,9 @@ func (m *machine) reload() {
 		// never leave the session with no screensaver AND no auto-lock, which
 		// is what exiting here would do: idle-delay is 0 while we own it, so a
 		// daemon that dies on a bad config takes auto-lock down with it.
-		// Note config.Load returns a partially applied config alongside a
-		// parse error, so cfg is deliberately not used on this path.
+		// The previous config is kept rather than the returned one: Load hands
+		// back Defaults() on error, and silently reverting a working setup to
+		// the defaults mid-session would be its own surprise.
 		m.d.log.Error("reloading the config, keeping the previous one", "err", err)
 		m.d.trace("reload:failed")
 		return
