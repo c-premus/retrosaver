@@ -55,6 +55,31 @@ All three delays are configurable, and stages 2 and 3 can be disabled individual
 
 ## Install
 
+### From the apt repository (recommended)
+
+Subscribe once and upgrades arrive with your normal `apt upgrade`:
+
+```bash
+sudo install -d /etc/apt/keyrings
+curl -fsSL https://git.example.com/api/packages/chris/debian/repository.key \
+  | sudo tee /etc/apt/keyrings/forgejo-chris.asc > /dev/null
+
+echo "deb [signed-by=/etc/apt/keyrings/forgejo-chris.asc] \
+https://git.example.com/api/packages/chris/debian stable main" \
+  | sudo tee /etc/apt/sources.list.d/retrosaver.list > /dev/null
+
+sudo apt update
+sudo apt install retrosaver
+retrosaver setup
+```
+
+`amd64` and `arm64` are both published; apt picks the right one. The single
+`stable` distribution is deliberate and works on any Debian or Ubuntu release —
+the binary is static and every dependency below exists across all of them, so
+per-codename repositories would be four index trees over one identical package.
+
+### From a release asset
+
 Download the `.deb` for your architecture from the
 [latest release](https://github.com/c-premus/retrosaver/releases), then:
 
