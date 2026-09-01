@@ -6,6 +6,14 @@
 #
 # Keep each `note` on a SINGLE line. chglog renders every subsequent line of a note as a
 # "-" sub-bullet, which makes a wrapped sentence look like a broken list.
+- semver: 0.0.3
+  date: 2026-09-01T00:00:00Z
+  packager: Chris <chris@example.com>
+  changes:
+    - note: "Add a dispatchable version-release workflow"
+    - note: "Drop the unused hash variable in generate-changelog.sh"
+    - note: "Restart the daemon on upgrade"
+
 - semver: 0.0.2
   date: 2026-09-01T00:00:00Z
   packager: Chris <chris@example.com>
