@@ -95,12 +95,25 @@ EXCLUDE="webcollage vidwhacker glslideshow photopile carousel sonar"
 INCLUDE=""
 ```
 
+Changes take effect as soon as you save the file: the daemon watches it and re-arms
+itself. `systemctl --user reload retrosaver` does the same thing on demand, and neither
+drops the D-Bus connection or the ownership of `idle-delay` the way a restart briefly does.
+
+Two things worth knowing about a reload:
+
+- **It behaves like user activity.** Any module on screen is torn down and the stages
+  re-arm from zero, so the new timings are counted from the moment you save.
+- **A broken config is ignored.** If the file will not parse, the error is logged and the
+  daemon carries on with the settings it already had, rather than exiting and taking your
+  auto-lock with it.
+
 Useful commands:
 
 ```bash
 retrosaver list              # print the modules that would be picked from
 retrosaver run atlantis      # launch one module now
 retrosaver stop              # tear it down
+systemctl --user reload retrosaver   # re-read the config now
 journalctl --user -u retrosaver -f
 ```
 

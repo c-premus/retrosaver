@@ -11,6 +11,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The daemon re-reads its configuration without a restart. It watches
+  `~/.config/retrosaver/retrosaver.conf` with inotify, so saving the file is enough, and it
+  also reloads on `SIGHUP` — exposed as `systemctl --user reload retrosaver`. Reloading
+  keeps the process, its D-Bus connection and its ownership of `idle-delay`, all of which a
+  restart drops for a moment.
+
+### Notes
+
+- A reload behaves like user activity: any module on screen is torn down and the stages
+  re-arm from zero, counted from the moment the file was saved.
+- A configuration that fails to parse is not applied. The error is logged and the previous
+  settings stay in force, because exiting would leave the session with no screensaver and
+  no auto-lock.
+
 ## [0.0.1] - 2026-09-01
 
 First release.

@@ -6,6 +6,11 @@ After=graphical-session.target
 
 [Service]
 ExecStart=/usr/bin/retrosaver daemon
+# SIGHUP re-reads the config in place. The daemon also watches the config file
+# itself, so this is the manual trigger rather than the only one. Reloading
+# keeps the D-Bus connection and the ownership of idle-delay, both of which a
+# restart drops for a moment.
+ExecReload=/bin/kill -HUP $MAINPID
 # retrosaver takes ownership of org.gnome.desktop.session idle-delay while it
 # runs. ExecStopPost restores it whenever the service stops, including on an
 # unclean exit -- without this, a crash would leave the session with no

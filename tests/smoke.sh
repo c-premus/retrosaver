@@ -106,5 +106,24 @@ else
     bad "stop returned non-zero with nothing running"
 fi
 
+note "Config reload"
+
+# A running daemon must survive SIGHUP and re-read its config rather than dying.
+# Non-interactive: this signals the existing service, it never takes the display.
+if systemctl --user is-active --quiet retrosaver 2>/dev/null; then
+    if systemctl --user reload retrosaver >/dev/null 2>&1; then
+        sleep 1
+        if systemctl --user is-active --quiet retrosaver; then
+            ok "systemctl --user reload retrosaver left the daemon running"
+        else
+            bad "the daemon stopped after a reload -- SIGHUP must not cancel the context"
+        fi
+    else
+        bad "systemctl --user reload retrosaver failed -- is ExecReload= in the unit?"
+    fi
+else
+    note "  (skipped: the retrosaver service is not active)"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

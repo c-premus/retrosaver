@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -28,6 +29,7 @@ import (
 	"github.com/c-premus/retrosaver/internal/idle"
 	"github.com/c-premus/retrosaver/internal/modules"
 	"github.com/c-premus/retrosaver/internal/session"
+	"github.com/c-premus/retrosaver/internal/watch"
 	"github.com/c-premus/retrosaver/internal/window"
 )
 
@@ -112,10 +114,59 @@ func cmdDaemon(args []string) error {
 	}
 
 	// SIGTERM and SIGINT must tear down cleanly and restore idle-delay.
+	// SIGHUP deliberately does NOT go through NotifyContext: that cancels the
+	// context, so a reload would stop the daemon instead of re-reading.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	return daemon.New(cfg).Run(ctx)
+	d := daemon.New(cfg)
+	d.Reload(reloadTriggers(ctx))
+	return d.Run(ctx)
+}
+
+// reloadTriggers returns a channel that fires when the config should be
+// re-read, fed by SIGHUP and by a watch on the config file itself.
+//
+// A failure to start the file watch is not fatal. inotify has per-user
+// instance and watch limits that a busy desktop can genuinely exhaust, and
+// losing automatic reload is a far smaller problem than refusing to run the
+// screensaver at all -- SIGHUP still works, so `systemctl --user reload` does
+// too.
+func reloadTriggers(ctx context.Context) <-chan struct{} {
+	out := make(chan struct{}, 1)
+
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+
+	var changed <-chan struct{}
+	if path, err := config.UserConfigPath(); err != nil {
+		slog.Warn("cannot locate the config file to watch it; SIGHUP still reloads", "err", err)
+	} else if ch, err := watch.File(ctx, path); err != nil {
+		slog.Warn("cannot watch the config file; SIGHUP still reloads", "path", path, "err", err)
+	} else {
+		changed = ch
+	}
+
+	go func() {
+		defer signal.Stop(hup)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hup:
+			case _, ok := <-changed:
+				if !ok {
+					changed = nil // the watch ended; SIGHUP still works
+					continue
+				}
+			}
+			select {
+			case out <- struct{}{}:
+			default: // a reload is already pending
+			}
+		}
+	}()
+	return out
 }
 
 func cmdRun(args []string) error {

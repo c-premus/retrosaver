@@ -128,6 +128,31 @@ type fakeLauncher struct {
 	avoided      [][]string
 	savers       []*fakeSaver
 	pickErr      error
+	// filters records SetFilters calls, so a reload test can prove the
+	// launcher was actually re-pointed rather than left on its stale copy.
+	filters [][2][]string
+}
+
+func (l *fakeLauncher) SetFilters(include, exclude []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.filters = append(l.filters, [2][]string{slices.Clone(include), slices.Clone(exclude)})
+	// Model the real launcher: what Pick hands out follows the include list.
+	if len(include) > 0 {
+		l.names = slices.Clone(include)
+	}
+}
+
+// lastFilters returns the include/exclude pair from the most recent
+// SetFilters call, or nil if it was never called.
+func (l *fakeLauncher) lastFilters() ([]string, []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.filters) == 0 {
+		return nil, nil
+	}
+	f := l.filters[len(l.filters)-1]
+	return f[0], f[1]
 }
 
 func (l *fakeLauncher) Pick(avoid ...string) (string, error) {
@@ -248,6 +273,13 @@ type harness struct {
 	sess  *fakeSession
 	trace chan string
 
+	// reloadC drives the config-reload path; nextCfg is what the injected
+	// loader hands back, and loadErr makes it fail instead.
+	reloadC chan struct{}
+	cfgMu   sync.Mutex
+	nextCfg config.Config
+	loadErr error
+
 	cancel context.CancelFunc
 	errc   chan error
 }
@@ -270,6 +302,9 @@ func start(t *testing.T, cfg config.Config, tweak ...func(*harness)) *harness {
 		sess:  &fakeSession{},
 		trace: make(chan string, 64),
 		errc:  make(chan error, 1),
+
+		reloadC: make(chan struct{}, 1),
+		nextCfg: cfg,
 	}
 	h.d = New(cfg)
 	for _, fn := range tweak {
@@ -282,6 +317,12 @@ func start(t *testing.T, cfg config.Config, tweak ...func(*harness)) *harness {
 	h.d.backstop = func() error { return nil }
 	h.d.log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	h.d.traceC = h.trace
+	h.d.Reload(h.reloadC)
+	h.d.loadCfg = func() (config.Config, error) {
+		h.cfgMu.Lock()
+		defer h.cfgMu.Unlock()
+		return h.nextCfg, h.loadErr
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
@@ -302,6 +343,27 @@ func (h *harness) want(tag string) {
 	case <-time.After(traceTimeout):
 		h.t.Fatalf("timed out waiting for trace %q", tag)
 	}
+}
+
+// reload makes the injected loader return cfg, then triggers a reload and
+// waits for the daemon to finish handling it.
+func (h *harness) reload(cfg config.Config, tag string) {
+	h.t.Helper()
+	h.cfgMu.Lock()
+	h.nextCfg, h.loadErr = cfg, nil
+	h.cfgMu.Unlock()
+	h.reloadC <- struct{}{}
+	h.want(tag)
+}
+
+// reloadFailing triggers a reload whose config cannot be read.
+func (h *harness) reloadFailing(err error) {
+	h.t.Helper()
+	h.cfgMu.Lock()
+	h.loadErr = err
+	h.cfgMu.Unlock()
+	h.reloadC <- struct{}{}
+	h.want("reload:failed")
 }
 
 // fire delivers a watch and waits for the daemon to finish handling it.
@@ -789,5 +851,162 @@ func TestShutdownRunsTheBackstop(t *testing.T) {
 	}
 	if called != 1 {
 		t.Errorf("backstop called %d times on shutdown, want 1", called)
+	}
+}
+
+// ---------------------------------------------------------------- reload
+
+func TestReloadReArmsAtTheNewThresholds(t *testing.T) {
+	h := start(t, defaultConfig())
+	defer h.stop() //nolint:errcheck
+
+	cfg := config.Config{
+		SaverDelay: 120 * time.Second,
+		LockAfter:  600 * time.Second,
+		BlankAfter: 120 * time.Second,
+	}
+	h.reload(cfg, "reload:ok")
+
+	// The first three intervals are the original arming; the next three are
+	// the reload, and they are cumulative.
+	got := h.mon.intervals()
+	want := []time.Duration{
+		300 * time.Second, 1200 * time.Second, 1320 * time.Second,
+		120 * time.Second, 720 * time.Second, 840 * time.Second,
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("intervals = %v, want %v", got, want)
+	}
+}
+
+// TestReloadRepointsTheLauncher is the test that matters most. The launcher
+// keeps its own copy of include/exclude, taken in New, so a reload that
+// updated only Daemon.cfg would change the timings and silently leave module
+// selection on the stale lists.
+func TestReloadRepointsTheLauncher(t *testing.T) {
+	h := start(t, defaultConfig())
+	defer h.stop() //nolint:errcheck
+
+	cfg := defaultConfig()
+	cfg.Include = []string{"flame", "ifs"}
+	cfg.Exclude = []string{"webcollage"}
+	h.reload(cfg, "reload:ok")
+
+	include, exclude := h.lau.lastFilters()
+	if !slices.Equal(include, []string{"flame", "ifs"}) {
+		t.Errorf("include = %v, want [flame ifs]", include)
+	}
+	if !slices.Equal(exclude, []string{"webcollage"}) {
+		t.Errorf("exclude = %v, want [webcollage]", exclude)
+	}
+
+	// And it must actually affect selection, not just be recorded. No stage
+	// ran before the reload, so no user-active watch was armed and the fresh
+	// saver watch is 4, not wSaver2.
+	h.fire(idle.WatchID(4), "watch:saver")
+	h.want("launch:ok:flame")
+	if got := h.lau.askedFor(); !slices.Contains(got, "flame") {
+		t.Errorf("launched %v, want the reloaded include list to be used", got)
+	}
+}
+
+func TestReloadStopsARunningModule(t *testing.T) {
+	h := start(t, defaultConfig())
+	defer h.stop() //nolint:errcheck
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	cfg := defaultConfig()
+	cfg.SaverDelay = 60 * time.Second
+	h.reload(cfg, "reload:ok")
+
+	if got := h.lau.savers[0].stopCount(); got != 1 {
+		t.Errorf("stopCount = %d, want 1: a reload must tear the module down", got)
+	}
+}
+
+// A reload while blanked must hand idle-delay back to 0, or the display would
+// stay off with the daemon believing it is idle.
+func TestReloadRestoresIdleDelayWhenBlanked(t *testing.T) {
+	h := start(t, defaultConfig())
+	defer h.stop() //nolint:errcheck
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+	h.fire(wLock, "watch:lock")
+	h.fire(wBlank, "watch:blank")
+
+	cfg := defaultConfig()
+	cfg.SaverDelay = 60 * time.Second
+	h.reload(cfg, "reload:ok")
+
+	// 0 at startup, blankIdleDelay at the blank stage, 0 again on reload.
+	want := []int{0, blankIdleDelay, 0}
+	if got := h.sess.delays(); !slices.Equal(got, want) {
+		t.Errorf("idle-delay writes = %v, want %v", got, want)
+	}
+}
+
+// A typo in the config must never cost the user their screensaver AND their
+// auto-lock, so a failed reload keeps the previous config and keeps running.
+func TestReloadKeepsThePreviousConfigOnError(t *testing.T) {
+	h := start(t, defaultConfig())
+	defer h.stop() //nolint:errcheck
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	before := h.mon.intervals()
+	h.reloadFailing(errors.New("parsing retrosaver.conf: bad value"))
+
+	if got := h.mon.intervals(); !slices.Equal(got, before) {
+		t.Errorf("intervals = %v, want them unchanged at %v", got, before)
+	}
+	if got := h.lau.savers[0].stopCount(); got != 0 {
+		t.Errorf("stopCount = %d, want 0: a failed reload must not tear down", got)
+	}
+	if h.d.cfg.SaverDelay != 300*time.Second {
+		t.Errorf("SaverDelay = %v, want the previous 5m0s", h.d.cfg.SaverDelay)
+	}
+}
+
+// inotify fires on every save, including one that changed nothing. Tearing
+// down a running module for that would be visible to the user.
+func TestReloadWithAnIdenticalConfigIsANoOp(t *testing.T) {
+	h := start(t, defaultConfig())
+	defer h.stop() //nolint:errcheck
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	before := h.mon.intervals()
+	h.reload(defaultConfig(), "reload:unchanged")
+
+	if got := h.mon.intervals(); !slices.Equal(got, before) {
+		t.Errorf("intervals = %v, want them unchanged at %v", got, before)
+	}
+	if got := h.lau.savers[0].stopCount(); got != 0 {
+		t.Errorf("stopCount = %d, want 0: an unchanged reload must not tear down", got)
+	}
+}
+
+// Disabling a stage through a reload must drop that watch entirely.
+func TestReloadCanDisableTheLockAndBlankStages(t *testing.T) {
+	h := start(t, defaultConfig())
+	defer h.stop() //nolint:errcheck
+
+	cfg := defaultConfig()
+	cfg.LockAfter = 0
+	cfg.BlankAfter = 0
+	h.reload(cfg, "reload:ok")
+
+	// Three watches at startup, then only the saver watch.
+	want := []time.Duration{
+		300 * time.Second, 1200 * time.Second, 1320 * time.Second,
+		300 * time.Second,
+	}
+	if got := h.mon.intervals(); !slices.Equal(got, want) {
+		t.Errorf("intervals = %v, want %v", got, want)
 	}
 }

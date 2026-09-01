@@ -41,6 +41,11 @@ back to gnome\-shell rather than poking DPMS behind the compositor's back.
 .TP
 .B daemon
 Run the idle state machine. Normally started by the systemd user unit, not by hand.
+Re-reads its configuration on
+.B SIGHUP
+and whenever the config file changes. See
+.B SIGNALS
+below.
 .TP
 .BI run " [module]"
 Launch one module fullscreen. Picks at random when
@@ -105,6 +110,15 @@ assets, network access, or elevated capabilities and misbehave standalone.
 .B INCLUDE
 Optional. If non\-empty, pick only from this space\-separated list.
 .PP
+Changes take effect as soon as the file is saved: the daemon watches it with inotify and
+re-arms itself.
+.B "systemctl \-\-user reload retrosaver"
+does the same on demand. A reload behaves like user activity \(em any module on screen is
+torn down and the stages re-arm from zero. A configuration that fails to parse is
+.B not
+applied: the error is logged and the daemon keeps the settings it already had, because
+exiting would leave the session with no screensaver and no auto\-lock.
+.PP
 Modules are discovered by intersecting the basenames of
 .I /usr/share/xscreensaver/config/*.xml
 with the executables in
@@ -168,6 +182,19 @@ does not work under GNOME's compositor. GL modules run through XWayland and keep
 awake. On a laptop,
 .B sleep\-inactive\-battery\-timeout
 may suspend the machine before the lock and blank stages land.
+.SH SIGNALS
+.TP
+.B SIGHUP
+Re-read the configuration file and re-arm, without restarting. The process, its D-Bus
+connection and its ownership of
+.B idle\-delay
+are all preserved, where a restart drops them for a moment. The systemd unit exposes this
+as
+.BR "systemctl \-\-user reload retrosaver" .
+.TP
+.BR SIGTERM ", " SIGINT
+Tear down cleanly, stopping any running module and restoring
+.BR idle\-delay .
 .SH DIAGNOSTICS
 Every state transition logs to standard error, so
 .B journalctl \-\-user \-u retrosaver

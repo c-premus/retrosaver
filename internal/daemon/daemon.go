@@ -48,6 +48,13 @@ type (
 	launcher interface {
 		Pick(avoid ...string) (string, error)
 		Launch(ctx context.Context, name string) (saver, error)
+		// SetFilters replaces the include/exclude lists used by Pick.
+		//
+		// This exists for config reload. The launcher holds its own copy of
+		// the lists rather than reading Daemon.cfg, so updating cfg alone
+		// would reload the timings and silently ignore a changed INCLUDE --
+		// the most likely thing to have been edited.
+		SetFilters(include, exclude []string)
 	}
 
 	// controller drives the GNOME session.
@@ -72,10 +79,27 @@ type Daemon struct {
 	backstop func() error
 	log      *slog.Logger
 
+	// reloadC, when non-nil, asks Run to re-read the config. cmd/retrosaver
+	// feeds it from SIGHUP and from an inotify watch on the config file.
+	// A nil channel blocks forever, which is exactly the right behaviour for
+	// a daemon started without either trigger.
+	reloadC <-chan struct{}
+
+	// loadCfg re-reads the config on reload. New installs the real loader;
+	// tests replace it to drive reload without touching the filesystem.
+	loadCfg func() (config.Config, error)
+
 	// traceC, when non-nil, receives one tag per completed event. Only tests
 	// set it; it is how they synchronise without sleeping.
 	traceC chan<- string
 }
+
+// Reload makes the daemon re-read its config whenever ch fires.
+//
+// It must be called before Run. Reloading keeps the process, the D-Bus
+// connection and the ownership of idle-delay in place, where a restart would
+// briefly drop all three.
+func (d *Daemon) Reload(ch <-chan struct{}) { d.reloadC = ch }
 
 // New returns a Daemon configured from cfg.
 func New(cfg config.Config) *Daemon {
@@ -99,7 +123,26 @@ func New(cfg config.Config) *Daemon {
 		session:  sessionController{},
 		backstop: window.StopRunning,
 		log:      slog.Default(),
+		loadCfg:  loadUserConfig,
 	}
+}
+
+// logArmed reports the cumulative stage timings under the given message, so a
+// reload reads the same way in the journal as the initial arming does.
+func (d *Daemon) logArmed(msg string) {
+	d.log.Info(msg,
+		"saver", d.cfg.SaverDelay,
+		"lock", stageDesc(d.cfg.LockEnabled(), d.cfg.SaverDelay+d.cfg.LockAfter),
+		"blank", stageDesc(d.cfg.BlankEnabled(), d.cfg.SaverDelay+d.cfg.LockAfter+d.cfg.BlankAfter))
+}
+
+// loadUserConfig re-reads the user's config file from its standard location.
+func loadUserConfig() (config.Config, error) {
+	path, err := config.UserConfigPath()
+	if err != nil {
+		return config.Config{}, err
+	}
+	return config.Load(path)
 }
 
 // realLauncher adapts internal/modules and internal/window to launcher.
@@ -113,6 +156,11 @@ type realLauncher struct {
 // handling rather than needing new selection logic.
 func (l *realLauncher) Pick(avoid ...string) (string, error) {
 	return l.finder.Pick(l.include, append(slices.Clone(l.exclude), avoid...))
+}
+
+// SetFilters replaces the lists Pick selects from, on config reload.
+func (l *realLauncher) SetFilters(include, exclude []string) {
+	l.include, l.exclude = include, exclude
 }
 
 func (l *realLauncher) Launch(ctx context.Context, name string) (saver, error) {
@@ -159,10 +207,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := m.arm(); err != nil {
 		return err
 	}
-	d.log.Info("armed",
-		"saver", d.cfg.SaverDelay,
-		"lock", stageDesc(d.cfg.LockEnabled(), d.cfg.SaverDelay+d.cfg.LockAfter),
-		"blank", stageDesc(d.cfg.BlankEnabled(), d.cfg.SaverDelay+d.cfg.LockAfter+d.cfg.BlankAfter))
+	d.logArmed("armed")
 	d.trace("armed")
 
 	fired := mon.Fired()
@@ -185,6 +230,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 		case r := <-m.launched:
 			m.handleLaunch(r)
+
+		case <-d.reloadC:
+			m.reload()
 		}
 	}
 }
@@ -401,6 +449,55 @@ func (m *machine) onActive(id idle.WatchID) {
 		// systemd restarts us cleanly.
 		m.d.log.Error("re-arming the watches", "err", err)
 	}
+}
+
+// reload re-reads the config and re-arms from it.
+//
+// It runs on Run's goroutine, like every other handler, which is what makes
+// writing d.cfg safe without a mutex.
+func (m *machine) reload() {
+	cfg, err := m.d.loadCfg()
+	if err != nil {
+		// Keep running on the last known-good config. A typo in the file must
+		// never leave the session with no screensaver AND no auto-lock, which
+		// is what exiting here would do: idle-delay is 0 while we own it, so a
+		// daemon that dies on a bad config takes auto-lock down with it.
+		// Note config.Load returns a partially applied config alongside a
+		// parse error, so cfg is deliberately not used on this path.
+		m.d.log.Error("reloading the config, keeping the previous one", "err", err)
+		m.d.trace("reload:failed")
+		return
+	}
+
+	if sameConfig(cfg, m.d.cfg) {
+		// inotify fires on every save, including one that changed nothing.
+		// Tearing down a running module for that would be user-visible.
+		m.d.log.Debug("config reloaded, unchanged")
+		m.d.trace("reload:unchanged")
+		return
+	}
+
+	m.d.cfg = cfg
+	// The launcher keeps its own copy of these, so cfg alone is not enough.
+	m.d.modules.SetFilters(cfg.Include, cfg.Exclude)
+
+	m.reset()
+	if err := m.rearm(); err != nil {
+		m.d.log.Error("re-arming the watches after a reload", "err", err)
+		m.d.trace("reload:failed")
+		return
+	}
+	m.d.logArmed("config reloaded")
+	m.d.trace("reload:ok")
+}
+
+// sameConfig reports whether two configs would produce identical behaviour.
+func sameConfig(a, b config.Config) bool {
+	return a.SaverDelay == b.SaverDelay &&
+		a.LockAfter == b.LockAfter &&
+		a.BlankAfter == b.BlankAfter &&
+		slices.Equal(a.Include, b.Include) &&
+		slices.Equal(a.Exclude, b.Exclude)
 }
 
 // rearm drops every watch and registers a fresh set.
