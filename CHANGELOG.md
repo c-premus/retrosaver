@@ -11,6 +11,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-09-01
+
 ### Fixed
 
 - Releasing no longer races with itself. `version-release.yaml` both pushed the tag *and*
@@ -86,7 +88,8 @@ First release.
 - GNOME on Wayland only. KDE and wlroots support the Wayland idle protocols, so upstream
   xscreensaver 6.11+ works there natively.
 
-[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.0.3...HEAD
+[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.0.4...HEAD
+[0.0.4]: https://github.com/c-premus/retrosaver/releases/tag/v0.0.4
 [0.0.3]: https://github.com/c-premus/retrosaver/releases/tag/v0.0.3
 [0.0.2]: https://github.com/c-premus/retrosaver/releases/tag/v0.0.2
 [0.0.1]: https://github.com/c-premus/retrosaver/releases/tag/v0.0.1
