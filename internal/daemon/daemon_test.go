@@ -331,6 +331,10 @@ const (
 	wLock   idle.WatchID = 2
 	wBlank  idle.WatchID = 3
 	wActive idle.WatchID = 4
+
+	// After a re-arm the fake hands out the next four ids in the same order.
+	wSaver2 idle.WatchID = 5
+	wLock2  idle.WatchID = 6
 )
 
 // ---------------------------------------------------------------- tests
@@ -445,14 +449,18 @@ func TestUserActiveTearsDownAndReArms(t *testing.T) {
 	if got := h.lau.savers[0].stopCount(); got != 1 {
 		t.Errorf("module stopped %d times on user activity, want 1", got)
 	}
-	// A second user-active watch must have been registered, because Mutter
-	// drops the fired one.
+	// Re-arming drops every watch and registers a fresh set, which is correct
+	// whether or not Mutter's idle watches survive a reset -- a question that
+	// cannot be settled without a human at the keyboard, since XTEST input
+	// does not move Mutter's idle clock.
+	if got := h.mon.removedWatches(); len(got) != 4 {
+		t.Errorf("RemoveWatch called with %v, want all four watches dropped", got)
+	}
+	if got := h.mon.intervals(); len(got) != 6 {
+		t.Errorf("idle watches added = %v, want six (three per arming, twice)", got)
+	}
 	if got := h.mon.activeWatches(); len(got) != 2 {
 		t.Errorf("user-active watches = %v, want two (the original and a re-arm)", got)
-	}
-	// The fired user-active watch must NOT be removed: Mutter already did.
-	if got := h.mon.removedWatches(); len(got) != 0 {
-		t.Errorf("RemoveWatch called with %v; a fired user-active watch is already gone", got)
 	}
 }
 
@@ -465,12 +473,20 @@ func TestSecondCycleAfterReset(t *testing.T) {
 	h.want("launch:ok:atlantis")
 	h.fire(wActive, "watch:active")
 
-	// The re-armed user-active watch got the next id.
-	h.fire(wSaver, "watch:saver")
+	// Re-arming registers a fresh set, so the second cycle's watches carry
+	// new ids: 5 saver, 6 lock, 7 blank, 8 user-active.
+	h.fire(wSaver2, "watch:saver")
 	h.want("launch:ok:atlantis")
 
 	if got := len(h.lau.askedFor()); got != 2 {
 		t.Errorf("Launch called %d times across two cycles, want 2", got)
+	}
+	// The first cycle's ids are stale now and must be ignored, not
+	// dispatched to whatever stage happens to sit at that index.
+	h.mon.fired <- wSaver
+	h.fire(wLock2, "watch:lock")
+	if got := h.sess.lockCount(); got != 1 {
+		t.Errorf("Lock called %d times; a stale watch id was dispatched", got)
 	}
 }
 

@@ -366,14 +366,35 @@ func (m *machine) onBlank() {
 
 func (m *machine) onActive(id idle.WatchID) {
 	m.d.log.Info("user is active: tearing down and re-arming")
-	// Do not RemoveWatch this id: Mutter already dropped it when it fired.
-	delete(m.watches, id)
 	m.reset()
-	if err := m.armActive(); err != nil {
-		// Without a user-active watch the daemon is deaf to activity, which
-		// is worse than dying: systemd restarts us cleanly.
-		m.d.log.Error("re-arming the user-active watch", "err", err)
+	if err := m.rearm(); err != nil {
+		// Without watches the daemon is deaf, which is worse than dying:
+		// systemd restarts us cleanly.
+		m.d.log.Error("re-arming the watches", "err", err)
 	}
+}
+
+// rearm drops every watch and registers a fresh set.
+//
+// Whether Mutter's idle watches survive a reset and fire again could not be
+// settled experimentally: XTEST input through XWayland does not reset Mutter's
+// idle clock (verified -- idletime keeps climbing straight through an
+// xdotool mousemove), because the idle monitor watches libinput rather than
+// synthetic X events. Nothing short of a human touching the hardware drives
+// it, so the daemon does not depend on the answer. Re-registering is correct
+// under either behaviour and costs four D-Bus calls once per return from idle.
+//
+// RemoveWatch is safe to call with any ID: Mutter accepts an unknown or
+// already-removed watch without complaint, verified against gnome-shell 50.1.
+// That is also why a successful RemoveWatch proves nothing about whether a
+// fired user-active watch was auto-removed -- so this does not try to infer it.
+func (m *machine) rearm() error {
+	for id := range m.watches {
+		if err := m.mon.RemoveWatch(id); err != nil {
+			m.d.log.Debug("removing a watch while re-arming", "id", id, "err", err)
+		}
+	}
+	return m.arm()
 }
 
 // reset returns to the idle state, undoing everything the stages did.

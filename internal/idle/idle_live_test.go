@@ -2,7 +2,6 @@ package idle
 
 import (
 	"os"
-	"os/exec"
 	"testing"
 	"time"
 )
@@ -16,6 +15,21 @@ import (
 //
 // Run them with the machine left alone: real input resets the idle clock and
 // will make the idle-watch assertions flap.
+//
+// # Why nothing here fakes user activity
+//
+// It cannot. Mutter refuses ResetIdletime unless gnome-shell was started with
+// MUTTER_DEBUG_RESET_IDLETIME ("This method is for testing purposes only"),
+// which is not how a real desktop runs. Injecting XTEST input with
+// `xdotool mousemove` does not work either: verified on gnome-shell 50.1, the
+// idle clock keeps climbing straight through it (17.0s -> 17.3s), because the
+// idle monitor watches libinput rather than synthetic X events. GNOME also
+// treats XTEST injection through XWayland as remote control and raises an
+// "allow remote interaction" prompt, so attempting it is both ineffective and
+// intrusive. Do not reintroduce it.
+//
+// Anything that needs the idle clock to reset therefore needs a human, and
+// lives in TestLiveIdleWatchReArmsWithRealInput below.
 
 func liveMonitor(t *testing.T) *Monitor {
 	t.Helper()
@@ -32,47 +46,6 @@ func liveMonitor(t *testing.T) *Monitor {
 		}
 	})
 	return m
-}
-
-// simulateActivity resets the session's idle clock the way a user would.
-//
-// Mutter refuses ResetIdletime unless it was started with
-// MUTTER_DEBUG_RESET_IDLETIME ("This method is for testing purposes only"),
-// which is not how a real desktop runs. So the fallback is a genuine XTEST
-// pointer event through XWayland, which is also a useful check in its own
-// right: it is the same path internal/window depends on.
-func simulateActivity(t *testing.T, m *Monitor) {
-	t.Helper()
-	if err := m.ResetIdletime(); err == nil {
-		return
-	}
-	if _, err := exec.LookPath("xdotool"); err != nil {
-		t.Skip("cannot simulate activity: Mutter gates ResetIdletime behind " +
-			"MUTTER_DEBUG_RESET_IDLETIME, and xdotool is not installed")
-	}
-	for _, args := range [][]string{
-		{"mousemove_relative", "--", "1", "1"},
-		{"mousemove_relative", "--", "-1", "-1"},
-	} {
-		if out, err := exec.Command("xdotool", args...).CombinedOutput(); err != nil {
-			t.Skipf("xdotool %v failed, cannot simulate activity: %v: %s", args, err, out)
-		}
-	}
-}
-
-// waitFired reports the next watch ID, or fails after timeout.
-func waitFired(t *testing.T, m *Monitor, timeout time.Duration, what string) WatchID {
-	t.Helper()
-	select {
-	case id, ok := <-m.Fired():
-		if !ok {
-			t.Fatalf("%s: Fired channel closed unexpectedly", what)
-		}
-		return id
-	case <-time.After(timeout):
-		t.Fatalf("%s: no watch fired within %v", what, timeout)
-		return 0
-	}
 }
 
 func TestLiveIdletime(t *testing.T) {
@@ -92,8 +65,7 @@ func TestLiveIdletime(t *testing.T) {
 // daemon starts on an already-idle session (boot, systemctl restart, a crash
 // loop), does a watch whose threshold is already in the past fire on its own?
 //
-// If it does not, daemon.Run must synthesise the missed stage by comparing
-// Idletime against the configured thresholds at startup.
+// It does, so daemon.arm deliberately carries no cold-start synthesis.
 func TestLiveIdleWatchAlreadyOverdue(t *testing.T) {
 	m := liveMonitor(t)
 
@@ -105,8 +77,7 @@ func TestLiveIdleWatchAlreadyOverdue(t *testing.T) {
 		t.Skipf("session has only been idle %v; leave the machine alone and re-run", now)
 	}
 
-	// Deliberately below the current idle time.
-	overdue := now / 2
+	overdue := now / 2 // deliberately below the current idle time
 	id, err := m.AddIdleWatch(overdue)
 	if err != nil {
 		t.Fatalf("AddIdleWatch(%v) = %v", overdue, err)
@@ -121,77 +92,110 @@ func TestLiveIdleWatchAlreadyOverdue(t *testing.T) {
 		t.Logf("an already-overdue watch (%v, idle %v) fired on its own: "+
 			"no cold-start synthesis needed", overdue, now)
 	case <-time.After(5 * time.Second):
-		t.Logf("an already-overdue watch (%v, idle %v) did NOT fire: "+
-			"daemon.Run must synthesise missed stages at startup", overdue, now)
+		t.Errorf("an already-overdue watch (%v, idle %v) did NOT fire; "+
+			"daemon.arm would need cold-start synthesis after all", overdue, now)
 	}
 }
 
-// TestLiveIdleWatchReArms answers the question daemon.reset depends on: after
-// the idle clock resets, does an existing idle watch fire a second time, or
-// must it be re-registered?
-func TestLiveIdleWatchReArms(t *testing.T) {
+// TestLiveRemoveWatchIsLenient documents that Mutter accepts any watch ID.
+//
+// daemon.rearm relies on this: it removes every watch it knows about without
+// caring whether Mutter already dropped it. It is also why a successful
+// RemoveWatch after a fire proves nothing about auto-removal, so no code
+// tries to infer that.
+func TestLiveRemoveWatchIsLenient(t *testing.T) {
 	m := liveMonitor(t)
 
+	id, err := m.AddIdleWatch(time.Hour)
+	if err != nil {
+		t.Fatalf("AddIdleWatch() = %v", err)
+	}
+	if err := m.RemoveWatch(id); err != nil {
+		t.Errorf("RemoveWatch(%d) = %v, want nil", id, err)
+	}
+	if err := m.RemoveWatch(id); err != nil {
+		t.Errorf("RemoveWatch(%d) a second time = %v, want nil", id, err)
+	}
+	if err := m.RemoveWatch(WatchID(999999)); err != nil {
+		t.Errorf("RemoveWatch(bogus) = %v, want nil", err)
+	}
+}
+
+// TestLiveIdleWatchReArmsWithRealInput needs a human at the keyboard, because
+// the idle clock cannot be reset any other way (see the package comment).
+//
+//	RETROSAVER_LIVE=1 RETROSAVER_LIVE_INPUT=1 \
+//	  go test ./internal/idle -run LiveIdleWatchReArms -v -timeout 5m
+//
+// Leave the machine alone until it says to move the mouse, then move it.
+//
+// This is informational: daemon.rearm re-registers its watches unconditionally,
+// so the daemon is correct whichever way this comes out. A PASS means that
+// belt-and-braces re-registration is redundant but harmless; a report that it
+// did not re-fire means it is load-bearing.
+func TestLiveIdleWatchReArmsWithRealInput(t *testing.T) {
+	m := liveMonitor(t)
+	if os.Getenv("RETROSAVER_LIVE_INPUT") == "" {
+		t.Skip("set RETROSAVER_LIVE_INPUT=1; this test needs a human to move the mouse")
+	}
+
 	const interval = 3 * time.Second
-
-	simulateActivity(t, m)
-
 	id, err := m.AddIdleWatch(interval)
 	if err != nil {
 		t.Fatalf("AddIdleWatch(%v) = %v", interval, err)
 	}
 	defer m.RemoveWatch(id) //nolint:errcheck // best effort in a test
 
-	if got := waitFired(t, m, 20*time.Second, "first idle fire"); got != id {
-		t.Fatalf("first fire = watch %d, want %d", got, id)
+	t.Logf(">>> LEAVE THE MACHINE ALONE for about %v <<<", interval)
+	select {
+	case got := <-m.Fired():
+		if got != id {
+			t.Fatalf("first fire = watch %d, want %d", got, id)
+		}
+		t.Log("idle watch fired once")
+	case <-time.After(60 * time.Second):
+		t.Fatal("no first fire within 60s; was the machine being used?")
 	}
-	t.Log("idle watch fired once")
 
-	// Reset the clock, then go idle again without re-registering anything.
-	simulateActivity(t, m)
+	t.Log(">>> NOW MOVE THE MOUSE <<<")
+	if !waitForActivity(t, m, 60*time.Second) {
+		t.Skip("the idle clock never reset; no input was given, so this is inconclusive")
+	}
+	t.Log("activity detected; now leave the machine alone again")
 
 	select {
 	case got := <-m.Fired():
 		if got != id {
 			t.Fatalf("second fire = watch %d, want %d", got, id)
 		}
-		t.Log("idle watch re-armed itself: daemon.reset need NOT re-add idle watches")
-	case <-time.After(20 * time.Second):
-		t.Error("idle watch did not fire a second time: " +
-			"daemon.reset MUST remove and re-add the idle watches")
+		t.Log("RESULT: idle watches re-arm themselves; daemon.rearm is belt-and-braces")
+	case <-time.After(60 * time.Second):
+		t.Log("RESULT: idle watches are one-shot; daemon.rearm's re-registration " +
+			"is load-bearing and must stay")
 	}
 }
 
-// TestLiveUserActiveWatchIsOneShot confirms that Mutter drops a user-active
-// watch once it fires, which is why the daemon re-arms one after every reset.
-func TestLiveUserActiveWatchIsOneShot(t *testing.T) {
-	m := liveMonitor(t)
-
-	// Be idle first: a user-active watch on an already-active session can
-	// fire immediately and tell us nothing.
-	simulateActivity(t, m)
-	time.Sleep(2 * time.Second)
-
-	id, err := m.AddUserActiveWatch()
+// waitForActivity polls until the idle clock goes backwards, which is the only
+// reliable signal that real input arrived.
+func waitForActivity(t *testing.T, m *Monitor, timeout time.Duration) bool {
+	t.Helper()
+	prev, err := m.Idletime()
 	if err != nil {
-		t.Fatalf("AddUserActiveWatch() = %v", err)
+		t.Fatalf("Idletime() = %v", err)
 	}
-	t.Logf("user-active watch id = %d", id)
-
-	simulateActivity(t, m)
-
-	if got := waitFired(t, m, 20*time.Second, "user-active fire"); got != id {
-		t.Fatalf("fire = watch %d, want %d", got, id)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(250 * time.Millisecond)
+		now, err := m.Idletime()
+		if err != nil {
+			t.Fatalf("Idletime() = %v", err)
+		}
+		if now < prev {
+			return true
+		}
+		prev = now
 	}
-
-	// If Mutter auto-removed it, removing it again must fail. The daemon
-	// relies on this: onActive deletes the ID from its map rather than
-	// calling RemoveWatch on an already-removed watch.
-	if err := m.RemoveWatch(id); err == nil {
-		t.Log("NOTE: RemoveWatch after fire SUCCEEDED; Mutter did not auto-remove it")
-	} else {
-		t.Logf("confirmed one-shot: RemoveWatch after fire = %v", err)
-	}
+	return false
 }
 
 func TestLiveConnectFailsFastWithoutABus(t *testing.T) {
