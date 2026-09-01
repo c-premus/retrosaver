@@ -62,6 +62,15 @@ func (f *Finder) Discover() ([]string, error) {
 
 // configuredNames returns the basenames of ConfigDir/*.xml.
 func (f *Finder) configuredNames() (map[string]bool, error) {
+	// Check the directory exists first. filepath.Glob returns (nil, nil) for a
+	// nonexistent directory, so without this a missing ConfigDir yields an
+	// empty intersection and the "no modules found" message goes on to blame
+	// BinDir -- the one directory that was fine. This is the usual shape of a
+	// half-installed xscreensaver-data.
+	if _, err := os.Stat(f.ConfigDir); err != nil {
+		return nil, fmt.Errorf("reading %s: %w", f.ConfigDir, err)
+	}
+
 	matches, err := filepath.Glob(filepath.Join(f.ConfigDir, "*.xml"))
 	if err != nil {
 		return nil, fmt.Errorf("globbing %s: %w", f.ConfigDir, err)
@@ -81,9 +90,14 @@ func (f *Finder) executableNames() (map[string]bool, error) {
 	}
 	names := make(map[string]bool, len(entries))
 	for _, e := range entries {
-		info, err := e.Info()
+		// os.Stat, not DirEntry.Info: Info is lstat-like, so a symlinked
+		// module executable reports mode Symlink, fails IsRegular and is
+		// dropped. Debian ships these as real files today, but a dropped
+		// module is exactly the silent rot the intersection exists to avoid,
+		// and following the link costs one stat per entry.
+		info, err := os.Stat(filepath.Join(f.BinDir, e.Name()))
 		if err != nil {
-			continue
+			continue // a broken symlink or a file that vanished under us
 		}
 		if !info.Mode().IsRegular() {
 			continue

@@ -161,26 +161,45 @@ func SavedIdleDelayPath() (string, error) {
 // important idempotency rule in the installer: running setup a second time
 // while the daemon holds idle-delay at 0 would otherwise record 0 as "the
 // original" and permanently destroy the user's auto-lock.
+//
+// The file is created with O_EXCL rather than stat-then-write, so that rule
+// survives concurrency. A stat and a later write are two steps: two setups
+// racing each other, or a setup racing the unit's ExecStopPost, can both see
+// no file and the loser then persists 0. O_EXCL makes check-and-create one
+// atomic step, so exactly one writer wins and the rest are no-ops.
 func SaveIdleDelay() error {
 	path, err := SavedIdleDelayPath()
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(path); err == nil {
-		return nil
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("session: checking %s: %w", path, err)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("session: creating directory %s: %w", filepath.Dir(path), err)
 	}
 
+	// Read before creating. A value read after winning the race would be no
+	// fresher, and this way the file never exists without a value in it.
 	current, err := IdleDelay()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("session: creating %s: %w", filepath.Dir(path), err)
+
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return nil
+		}
+		return fmt.Errorf("session: creating %s: %w", path, err)
 	}
-	if err := os.WriteFile(path, []byte(strconv.Itoa(current)+"\n"), 0o644); err != nil {
+	if _, err := f.WriteString(strconv.Itoa(current) + "\n"); err != nil {
+		_ = f.Close()
+		// Do not leave an empty file behind: it would win every future
+		// O_EXCL and pin the restore to DefaultIdleDelay for good.
+		_ = os.Remove(path)
 		return fmt.Errorf("session: writing %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("session: closing %s: %w", path, err)
 	}
 	return nil
 }

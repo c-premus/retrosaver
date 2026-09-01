@@ -1,9 +1,13 @@
+//go:build linux
+
 package watch
 
 import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -185,4 +189,44 @@ func TestFileCreatesAMissingDirectory(t *testing.T) {
 	if _, err := os.Stat(dir); err != nil {
 		t.Errorf("the watched directory was not created: %v", err)
 	}
+}
+
+// readerGone reports whether any goroutine is still inside read.
+//
+// The frame is matched with its opening parenthesis so this helper's own frame,
+// watch.readerGone, does not match and report itself as the reader.
+func readerGone() bool {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	return !strings.Contains(string(buf[:n]), "retrosaver/internal/watch.read(")
+}
+
+// TestCancelStopsTheReaderGoroutine pins the IN_NONBLOCK flag in File.
+//
+// Without it os.NewFile never registers the descriptor with the runtime poller,
+// so Close cannot interrupt a pending Read and the reader stays parked in
+// read(2) until an unrelated event happens to land in the watched directory.
+// This test cancels with no directory activity at all, so it fails -- reader
+// still on the stack after two seconds -- the moment that flag is dropped.
+func TestCancelStopsTheReaderGoroutine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "retrosaver.conf")
+	ctx, cancel := context.WithCancel(context.Background())
+	if _, err := File(ctx, path); err != nil {
+		t.Fatalf("File() = %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond) // let the reader reach its first Read
+	if readerGone() {
+		t.Fatal("the reader goroutine never started")
+	}
+
+	cancel()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if readerGone() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("the reader goroutine is still parked in read(2) 2s after cancel")
 }

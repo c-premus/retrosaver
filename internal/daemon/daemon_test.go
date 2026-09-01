@@ -32,6 +32,10 @@ type fakeMonitor struct {
 	removed []idle.WatchID
 	closed  bool
 	addErr  error
+
+	// activeErr makes AddUserActiveWatch fail, which is a different path from
+	// addErr: the user-active watch is armed per stage, not by arm().
+	activeErr error
 }
 
 func newFakeMonitor() *fakeMonitor {
@@ -52,6 +56,9 @@ func (f *fakeMonitor) AddIdleWatch(d time.Duration) (idle.WatchID, error) {
 func (f *fakeMonitor) AddUserActiveWatch() (idle.WatchID, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.activeErr != nil {
+		return 0, f.activeErr
+	}
 	f.next++
 	f.actives = append(f.actives, f.next)
 	return f.next, nil
@@ -1008,5 +1015,87 @@ func TestReloadCanDisableTheLockAndBlankStages(t *testing.T) {
 	}
 	if got := h.mon.intervals(); !slices.Equal(got, want) {
 		t.Errorf("intervals = %v, want %v", got, want)
+	}
+}
+
+// setAddErr makes every subsequent AddIdleWatch fail, through the fake's own
+// mutex rather than by writing the field while Run is live.
+func (f *fakeMonitor) setAddErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.addErr = err
+}
+
+// waitErr waits for Run to return on its own, without cancelling the context.
+func (h *harness) waitErr() error {
+	h.t.Helper()
+	select {
+	case err := <-h.errc:
+		return err
+	case <-time.After(traceTimeout):
+		h.t.Fatal("Run did not return")
+		return nil
+	}
+}
+
+// A re-arm that fails must end Run so systemd's Restart=always produces a
+// clean process.
+//
+// arm() replaces the watch map before it adds anything, so a failure on the
+// first AddIdleWatch leaves the machine with zero watches and nothing that
+// ever retries: no screensaver and no stage-2 lock for the life of the
+// process. Logging the error and carrying on -- which is what this used to do
+// -- makes the daemon permanently deaf while still looking healthy.
+func TestAFailedReArmEndsRun(t *testing.T) {
+	h := start(t, defaultConfig())
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	sentinel := errors.New("mutter went away")
+	h.mon.setAddErr(sentinel)
+	h.mon.fired <- wActive
+
+	err := h.waitErr()
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Run() = %v, want it to wrap %v", err, sentinel)
+	}
+}
+
+// The same contract on the reload path: a reload that cannot re-arm leaves the
+// daemon just as deaf as a failed user-active re-arm does.
+func TestAFailedReArmAfterAReloadEndsRun(t *testing.T) {
+	h := start(t, defaultConfig())
+
+	sentinel := errors.New("mutter went away")
+	h.mon.setAddErr(sentinel)
+
+	cfg := defaultConfig()
+	cfg.SaverDelay = 42 * time.Second
+	h.cfgMu.Lock()
+	h.nextCfg, h.loadErr = cfg, nil
+	h.cfgMu.Unlock()
+	h.reloadC <- struct{}{}
+	h.want("reload:failed")
+
+	if err := h.waitErr(); !errors.Is(err, sentinel) {
+		t.Fatalf("Run() = %v, want it to wrap %v", err, sentinel)
+	}
+}
+
+// With LOCK_AFTER=0 the saver is the only stage, so a user-active watch that
+// cannot be armed has no later stage to retry from: the module would stay
+// fullscreen over the user's session forever. That must end Run too.
+func TestAFailedUserActiveWatchWithNoLockStageEndsRun(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.LockAfter = 0
+	cfg.BlankAfter = 0
+
+	sentinel := errors.New("no more watches for you")
+	h := start(t, cfg, func(h *harness) { h.mon.activeErr = sentinel })
+
+	h.mon.fired <- wSaver
+	if err := h.waitErr(); !errors.Is(err, sentinel) {
+		t.Fatalf("Run() = %v, want it to wrap %v", err, sentinel)
 	}
 }

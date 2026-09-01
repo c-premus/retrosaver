@@ -80,8 +80,16 @@ func Connect() (*Monitor, error) {
 	// Ask the bus daemon who owns the name rather than calling the object.
 	// A method call on an unowned name can trigger service activation and
 	// block for the activation timeout; NameHasOwner answers immediately.
+	//
+	// CallWithContext, not Call: Call passes context.Background() and so waits
+	// forever, and this runs on the startup path before anything else can make
+	// progress. A wedged bus daemon would hang the whole process here.
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	defer cancel()
+
 	var owned bool
-	if err := conn.BusObject().Call("org.freedesktop.DBus.NameHasOwner", 0, busName).Store(&owned); err != nil {
+	if err := conn.BusObject().CallWithContext(
+		ctx, "org.freedesktop.DBus.NameHasOwner", 0, busName).Store(&owned); err != nil {
 		return nil, fmt.Errorf("idle: asking the bus who owns %s: %w", busName, err)
 	}
 	if !owned {

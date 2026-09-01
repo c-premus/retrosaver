@@ -1,3 +1,5 @@
+//go:build linux
+
 package window
 
 import (
@@ -215,12 +217,36 @@ func TestWriteStateSkipsAbsentUnclutter(t *testing.T) {
 	}
 }
 
+// fakePkill replaces the process-wide backstop for the duration of a test and
+// returns a pointer to its call count.
+//
+// StopRunning must never run the real pkill from a unit test: it matches by
+// executable prefix across the whole system, so on a developer's own desktop
+// `go test ./...` would kill the module the live daemon is showing.
+// t.Setenv("XDG_RUNTIME_DIR", ...) isolates the state files and nothing else.
+func fakePkill(t *testing.T, err error) *int {
+	t.Helper()
+	calls := 0
+	prev := pkill
+	pkill = func() error {
+		calls++
+		return err
+	}
+	t.Cleanup(func() { pkill = prev })
+	return &calls
+}
+
 // tests/smoke.sh asserts that stop exits 0 when nothing is running, so this
 // is the unit-level version of that contract.
 func TestStopRunningIsACleanNoOp(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	calls := fakePkill(t, nil)
+
 	if err := StopRunning(); err != nil {
 		t.Errorf("StopRunning() with nothing running = %v, want nil", err)
+	}
+	if *calls != 1 {
+		t.Errorf("pkill backstop called %d times, want 1", *calls)
 	}
 }
 
@@ -229,6 +255,7 @@ func TestStopRunningIsACleanNoOp(t *testing.T) {
 func TestStopRunningIgnoresAStalePIDFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", dir)
+	fakePkill(t, nil)
 
 	if err := os.WriteFile(pidPath(), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -237,6 +264,29 @@ func TestStopRunningIgnoresAStalePIDFile(t *testing.T) {
 		t.Fatalf("StopRunning() = %v", err)
 	}
 	// Reaching here at all means the test process was not signalled.
+}
+
+// A real pkill exits 1 for "no processes matched", which is the normal case
+// and must not surface as an error.
+//
+// The prefix is deliberately one that cannot match anything, so this exercises
+// the real binary and the real exit code without firing a system-wide pkill at
+// the module directory -- which is the whole reason the seam above exists.
+func TestPkillTreatsNoMatchAsSuccess(t *testing.T) {
+	if err := pkillPrefix("/nonexistent/retrosaver-test-no-such-dir/"); err != nil {
+		t.Errorf("pkillPrefix() with nothing matching = %v, want nil", err)
+	}
+}
+
+// A backstop that genuinely fails must be reported, not swallowed.
+func TestStopRunningReportsAFailingBackstop(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	sentinel := errors.New("pkill exploded")
+	fakePkill(t, sentinel)
+
+	if err := StopRunning(); !errors.Is(err, sentinel) {
+		t.Errorf("StopRunning() = %v, want it to wrap %v", err, sentinel)
+	}
 }
 
 func TestRunningModuleReportsNothingWhenIdle(t *testing.T) {

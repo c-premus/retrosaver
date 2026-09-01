@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -63,22 +64,29 @@ func UserConfigPath() (string, error) {
 	return filepath.Join(dir, "retrosaver", "retrosaver.conf"), nil
 }
 
-// Load reads the config at path. A missing file is not an error: the defaults
-// are returned unchanged, which is what a fresh install should do.
+// Load reads the config at path.
+//
+// Parsing is all-or-nothing. On any error the returned Config is Defaults(),
+// never a half-applied file, so a caller may use the returned Config whether
+// or not err is nil. That is what lets the daemon log a bad config and keep
+// running: refusing to start would leave the session with no screensaver and,
+// because setup hands idle-delay to the daemon, no auto-lock either.
+//
+// A missing file is not an error: the defaults are returned unchanged, which
+// is what a fresh install should do.
 func Load(path string) (Config, error) {
-	cfg := Defaults()
-
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return cfg, nil
+			return Defaults(), nil
 		}
-		return cfg, fmt.Errorf("opening %s: %w", path, err)
+		return Defaults(), fmt.Errorf("opening %s: %w", path, err)
 	}
 	defer f.Close()
 
+	cfg := Defaults()
 	if err := parse(f, &cfg); err != nil {
-		return cfg, fmt.Errorf("parsing %s: %w", path, err)
+		return Defaults(), fmt.Errorf("parsing %s: %w", path, err)
 	}
 	return cfg, nil
 }
@@ -140,6 +148,11 @@ func unquote(s string) string {
 	return s
 }
 
+// maxSeconds is the largest value that survives conversion to a Duration.
+// A Duration is an int64 nanosecond count, so a larger number of seconds wraps
+// silently negative -- past the n < 0 check, which is why it is rejected here.
+const maxSeconds = int64(math.MaxInt64 / time.Second)
+
 func seconds(s string) (time.Duration, error) {
 	n, err := strconv.Atoi(s)
 	if err != nil {
@@ -147,6 +160,9 @@ func seconds(s string) (time.Duration, error) {
 	}
 	if n < 0 {
 		return 0, fmt.Errorf("must not be negative, got %d", n)
+	}
+	if int64(n) > maxSeconds {
+		return 0, fmt.Errorf("must not exceed %d, got %d", maxSeconds, n)
 	}
 	return time.Duration(n) * time.Second, nil
 }

@@ -234,6 +234,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 		case <-d.reloadC:
 			m.reload()
 		}
+
+		// A handler that could not re-arm has left the daemon with no watches
+		// at all, and nothing that will ever retry: no screensaver and no
+		// stage-2 lock for the rest of this process's life. Being deaf is
+		// worse than dying, so return and let Restart=always produce a clean
+		// process with fresh watches. ExecStopPost restores idle-delay in the
+		// meantime, so the session is never left without auto-lock.
+		if m.fatal != nil {
+			return m.fatal
+		}
 	}
 }
 
@@ -284,6 +294,12 @@ type launchResult struct {
 	name  string
 	saver saver
 	err   error
+
+	// cancel releases the context this particular launch ran under. It travels
+	// with the result rather than being read from machine.cancel, which always
+	// points at whatever launch is current: a queued result from an abandoned
+	// launch would otherwise cancel the launch that replaced it, mid-flight.
+	cancel context.CancelFunc
 }
 
 // machine holds the state. Every field is touched only by Run's goroutine, so
@@ -304,6 +320,12 @@ type machine struct {
 	tried       []string
 	blanked     bool
 	activeArmed bool
+
+	// fatal records a failure that leaves the daemon unable to do its job at
+	// all -- in practice, one that leaves it with no watches. Handlers are
+	// dispatched from a select and cannot return an error, so they set this
+	// and Run checks it after every dispatch. See Run.
+	fatal error
 }
 
 // arm registers the idle watches and the user-active watch.
@@ -367,6 +389,14 @@ func (m *machine) ensureActiveWatch() {
 		// it would leave a module on screen. Report it and let the next stage
 		// try again.
 		m.d.log.Error("arming the user-active watch", "err", err)
+		if !m.d.cfg.LockEnabled() {
+			// With LOCK_AFTER=0 the saver is the only stage, so there is no
+			// next stage to retry from: the module would stay fullscreen and
+			// always-on-top over the user's session with nothing to take it
+			// down. Die instead and let systemd restart us.
+			m.fatal = fmt.Errorf(
+				"daemon: arming the user-active watch, and LOCK_AFTER=0 leaves no later stage to retry from: %w", err)
+		}
 		return
 	}
 	m.watches[id] = kindActive
@@ -446,8 +476,11 @@ func (m *machine) onActive(id idle.WatchID) {
 	m.reset()
 	if err := m.rearm(); err != nil {
 		// Without watches the daemon is deaf, which is worse than dying:
-		// systemd restarts us cleanly.
-		m.d.log.Error("re-arming the watches", "err", err)
+		// systemd restarts us cleanly. arm replaces the watch map before it
+		// adds anything, so a failure on the first AddIdleWatch leaves zero
+		// watches behind -- logging and carrying on would strand the daemon
+		// permanently, which is what this used to do.
+		m.fatal = fmt.Errorf("daemon: re-arming the watches after user activity: %w", err)
 	}
 }
 
@@ -483,7 +516,9 @@ func (m *machine) reload() {
 
 	m.reset()
 	if err := m.rearm(); err != nil {
-		m.d.log.Error("re-arming the watches after a reload", "err", err)
+		// Same reasoning as onActive: no watches means no screensaver and no
+		// lock, for good. Die rather than sit there deaf.
+		m.fatal = fmt.Errorf("daemon: re-arming the watches after a reload: %w", err)
 		m.d.trace("reload:failed")
 		return
 	}
@@ -562,13 +597,21 @@ func (m *machine) startLaunch() {
 	gen := m.gen
 	go func() {
 		s, err := m.d.modules.Launch(ctx, name)
-		m.launched <- launchResult{gen: gen, name: name, saver: s, err: err}
+		m.launched <- launchResult{gen: gen, name: name, saver: s, err: err, cancel: cancel}
 	}()
 }
 
 func (m *machine) handleLaunch(r launchResult) {
-	if m.cancel != nil {
-		m.cancel()
+	// Release this launch's own context. Cancelling m.cancel instead would
+	// cancel whichever launch is current, which after a reload re-armed an
+	// overdue saver watch is not the launch this result came from.
+	if r.cancel != nil {
+		r.cancel()
+	}
+	if r.gen == m.gen {
+		// The current launch has finished, so there is nothing left for
+		// stopSaver to cancel. A stale result must not clear a newer launch's
+		// cancel func.
 		m.cancel = nil
 	}
 
@@ -583,8 +626,19 @@ func (m *machine) handleLaunch(r launchResult) {
 	}
 
 	if r.err != nil {
-		m.d.log.Warn("module failed to start", "module", r.name, "err", r.err)
-		if len(m.tried) < 2 {
+		// Distinguish the two failure modes in the journal. window.ErrNoWindow
+		// exists to mark "the process started but mapped nothing", which reads
+		// very differently from "the process would not start" when someone is
+		// working out why their screensaver is blank.
+		if errors.Is(r.err, window.ErrNoWindow) {
+			m.d.log.Warn("module started but mapped no window", "module", r.name, "err", r.err)
+		} else {
+			m.d.log.Warn("module failed to start", "module", r.name, "err", r.err)
+		}
+		// Retry only when the module itself is at fault. A launch the daemon
+		// cancelled reports context.Canceled, and spending the single retry on
+		// that leaves a genuinely broken module untried.
+		if retryable(r.err) && len(m.tried) < 2 {
 			m.startLaunch() // retry once, with a module Pick has not tried
 		}
 		m.d.trace("launch:failed:" + r.name)
@@ -594,6 +648,17 @@ func (m *machine) handleLaunch(r launchResult) {
 	m.current = r.saver
 	m.d.log.Info("screensaver running", "module", r.name)
 	m.d.trace("launch:ok:" + r.name)
+}
+
+// retryable reports whether a failed launch is worth another module.
+//
+// A context cancellation means the daemon abandoned the launch on purpose --
+// the user came back, or a stage advanced -- so there is nothing to retry and
+// a teardown is already under way. Everything else is the module's fault: it
+// would not start, or it started and mapped no window, and both are worth one
+// try with a different module.
+func retryable(err error) bool {
+	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
 // stopSaver cancels any launch in flight and stops any running module.

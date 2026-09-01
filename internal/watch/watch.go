@@ -1,3 +1,9 @@
+//go:build linux
+
+// Linux-only in fact, not merely by intent: inotify has no portable
+// equivalent. The constraint makes a build on another OS report "no Go files"
+// rather than fail with a page of undefined symbols.
+
 // Package watch reports changes to a single file using inotify.
 //
 // It exists so the daemon can pick up an edited config without a restart. It
@@ -12,6 +18,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -56,26 +63,45 @@ func File(ctx context.Context, path string) (<-chan struct{}, error) {
 		return nil, fmt.Errorf("watch: creating %s: %w", dir, err)
 	}
 
-	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC)
+	// IN_NONBLOCK is load-bearing and must not be "simplified" away. os.NewFile
+	// hands the descriptor to the runtime poller only when O_NONBLOCK is
+	// already set on it -- see os.newFile, which computes
+	// `pollable := kind == kindOpenFile || kind == kindPipe || kind == kindSock
+	// || nonBlocking` and gets nonBlocking from unix.HasNonblockFlag(flags).
+	// A blocking inotify fd lands on the kindNewFile path, is never registered
+	// with epoll, and its Read then parks in read(2) where Close cannot reach
+	// it. With the flag set, Close unblocks the reader as run() assumes.
+	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
 	if err != nil {
 		return nil, fmt.Errorf("watch: inotify_init1: %w", err)
 	}
 
 	// IN_CLOSE_WRITE covers a direct write; IN_MOVED_TO covers the
 	// write-temp-then-rename that most editors do; IN_CREATE covers the file
-	// appearing for the first time.
-	const mask = unix.IN_CLOSE_WRITE | unix.IN_MOVED_TO | unix.IN_CREATE
+	// appearing for the first time. IN_DELETE and IN_MOVED_FROM cover the file
+	// going away, which is a real config change: Load treats a missing file as
+	// "use the defaults", so a delete must reload rather than be ignored.
+	const mask = unix.IN_CLOSE_WRITE | unix.IN_MOVED_TO | unix.IN_CREATE |
+		unix.IN_DELETE | unix.IN_MOVED_FROM
 	if _, err := unix.InotifyAddWatch(fd, dir, mask); err != nil {
 		unix.Close(fd)
 		return nil, fmt.Errorf("watch: adding an inotify watch on %s: %w", dir, err)
 	}
 
-	// Wrap the descriptor in an *os.File rather than reading it raw. The
-	// runtime reference-counts an os.File, so Close unblocks a pending Read
-	// and cannot yield the descriptor number while a goroutine still holds
-	// it. Closing a raw fd out from under a blocked unix.Read is a real race:
-	// observed here as EBADF once the number was recycled by another
-	// goroutine, after which the watch silently reported nothing.
+	// Wrap the descriptor in an *os.File rather than reading it raw, for two
+	// distinct reasons -- only the first of which is about Close.
+	//
+	// The runtime reference-counts an os.File, so it cannot yield the
+	// descriptor number while a goroutine still holds it. Closing a raw fd out
+	// from under a blocked unix.Read is a real race: observed here as EBADF
+	// once the number was recycled by another goroutine, after which the watch
+	// silently reported nothing.
+	//
+	// Separately, os.File.Read retries EINTR internally, which matters because
+	// the Go runtime's preemption signals interrupt a blocking read often.
+	//
+	// Close unblocking a pending Read is a property of the poller, not of
+	// os.File as such, and it is IN_NONBLOCK above that buys it.
 	f := os.NewFile(uintptr(fd), "inotify")
 
 	out := make(chan struct{}, 1)
@@ -97,7 +123,8 @@ func run(ctx context.Context, f *os.File, name string, out chan<- struct{}) {
 	}()
 
 	raw := make(chan struct{}, 1)
-	go read(f, name, raw)
+	readErr := make(chan error, 1)
+	go read(f, name, raw, readErr)
 
 	var timer <-chan time.Time
 	for {
@@ -107,10 +134,25 @@ func run(ctx context.Context, f *os.File, name string, out chan<- struct{}) {
 
 		case _, ok := <-raw:
 			if !ok {
-				// The reader stopped: either ctx cancelled and closed the fd,
-				// or the read failed unrecoverably. Wait for cancellation so
-				// the caller sees the channel close at a predictable point.
-				<-done
+				// The reader stopped. Cancellation is the ordinary case: the
+				// fd was closed on purpose, so wait for done and let the
+				// caller see the channel close at a predictable point.
+				//
+				// Test ctx, not done: cancel() closes the fd and closes done
+				// in that order, so raw can close first and a select on done
+				// would report an ordinary shutdown as a failure. ctx.Err()
+				// is already set by the time either happens.
+				if ctx.Err() != nil {
+					<-done
+					return
+				}
+				// Otherwise the read failed for good and this watch is dead.
+				// Return rather than parking on done forever: closing out is
+				// how the caller learns to stop relying on it and fall back
+				// to SIGHUP, and a watch that reports nothing while looking
+				// healthy is the exact failure this package exists to avoid.
+				slog.Error("config watch stopped; reload now needs SIGHUP",
+					"file", name, "err", <-readErr)
 				return
 			}
 			// Restart the settle timer on every event, so a burst produces
@@ -129,16 +171,21 @@ func run(ctx context.Context, f *os.File, name string, out chan<- struct{}) {
 
 // read turns inotify events naming the watched file into sends on raw.
 //
-// os.File.Read retries EINTR internally, which matters because the Go runtime
-// signals threads often enough to interrupt a blocking read regularly.
-func read(f *os.File, name string, raw chan<- struct{}) {
+// It closes raw when it stops and reports why on errc, which is buffered so
+// this never blocks. os.File.Read retries EINTR internally, which matters
+// because the Go runtime signals threads often enough to interrupt a read
+// regularly.
+func read(f *os.File, name string, raw chan<- struct{}, errc chan<- error) {
 	defer close(raw)
 
 	buf := make([]byte, eventBufSize)
 	for {
 		n, err := f.Read(buf)
 		if err != nil {
-			return // the file was closed, or the read failed for good
+			// The file was closed, or the read failed for good. run
+			// distinguishes the two by whether ctx was cancelled.
+			errc <- err
+			return
 		}
 		if n <= 0 {
 			continue

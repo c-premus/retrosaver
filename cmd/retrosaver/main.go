@@ -1,3 +1,10 @@
+//go:build linux
+
+// Linux-only in fact, not merely by intent: it drives systemd, logind and
+// GNOME over D-Bus, and depends on packages that are themselves constrained to
+// Linux. The constraint makes a build on another OS report "no Go files"
+// rather than fail with a page of undefined symbols.
+
 // Command retrosaver brings classic XScreenSaver display modules back to
 // GNOME on Wayland, where the traditional screensaver daemon no longer works.
 //
@@ -20,6 +27,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"syscall"
@@ -35,6 +43,87 @@ import (
 
 // version is set at build time via -ldflags "-X main.version=...".
 var version = "dev"
+
+// versionString renders the version with the VCS stamps the Go toolchain
+// embeds in every main package.
+//
+// The revision is what makes "is the running daemon actually my new build?"
+// answerable in one command. apt replaces the binary on disk without
+// restarting the daemon, so the running process can be an older image whose
+// /proc/<pid>/exe reads "(deleted)"; comparing revisions is quicker than
+// working that out by hand.
+func versionString() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return version
+	}
+	var rev, when string
+	modified := false
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.time":
+			when = s.Value
+		case "vcs.modified":
+			modified = s.Value == "true"
+		}
+	}
+	if rev == "" {
+		return version
+	}
+	if len(rev) > 12 {
+		rev = rev[:12]
+	}
+	if modified {
+		rev += "-dirty"
+	}
+	if when == "" {
+		return fmt.Sprintf("%s (%s)", version, rev)
+	}
+	return fmt.Sprintf("%s (%s, %s)", version, rev, when)
+}
+
+// logLevelEnv names the environment variable that sets the daemon's log level.
+// Put it in the unit with Environment=RETROSAVER_LOG_LEVEL=debug.
+const logLevelEnv = "RETROSAVER_LOG_LEVEL"
+
+// setupLogging installs the daemon's slog handler.
+//
+// Without this the package default applies: Info level, so every Debug call in
+// internal/daemon is dead, and a "2006/01/02 15:04:05" timestamp that journald
+// then duplicates on every line. The Debug lines are precisely the ones wanted
+// when diagnosing a bad reload or a stale watch ID, so they need a way to be
+// switched on.
+func setupLogging() {
+	level := slog.LevelInfo
+	raw := os.Getenv(logLevelEnv)
+	var levelErr error
+	if raw != "" {
+		if levelErr = level.UnmarshalText([]byte(raw)); levelErr != nil {
+			level = slog.LevelInfo // an unreadable level must not stop the daemon
+		}
+	}
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: level,
+		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			// systemd stamps every journal entry itself, so a timestamp here
+			// is duplicated noise in `journalctl --user -u retrosaver`.
+			if a.Key == slog.TimeKey {
+				return slog.Attr{}
+			}
+			return a
+		},
+	})))
+
+	// Reported through the handler this function just installed, so it lands
+	// in the journal like everything else.
+	if levelErr != nil {
+		slog.Warn("ignoring an unparseable log level, using info",
+			"var", logLevelEnv, "value", raw, "err", levelErr)
+	}
+}
 
 const usage = `retrosaver - retro screensavers for GNOME on Wayland
 
@@ -82,7 +171,7 @@ func dispatch(cmd string, args []string) error {
 	case "teardown":
 		return cmdTeardown(args)
 	case "version", "--version", "-v":
-		fmt.Println(version)
+		fmt.Println(versionString())
 		return nil
 	case "help", "--help", "-h":
 		fmt.Print(usage)
@@ -108,9 +197,17 @@ func cmdDaemon(args []string) error {
 		return err
 	}
 
+	setupLogging()
+
+	// A config that will not parse must not stop the daemon. Load is
+	// all-or-nothing, so cfg is the shipped defaults here, and running on
+	// defaults beats a crash loop: setup hands idle-delay to the daemon, so a
+	// daemon that will not start leaves the session with no screensaver AND no
+	// auto-lock until someone notices. reload has always behaved this way;
+	// startup now matches it.
 	cfg, err := loadConfig()
 	if err != nil {
-		return err
+		slog.Error("config is unusable, carrying on with the defaults", "err", err)
 	}
 
 	// SIGTERM and SIGINT must tear down cleanly and restore idle-delay.

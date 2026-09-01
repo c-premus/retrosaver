@@ -1,3 +1,10 @@
+//go:build linux
+
+// Linux-only in fact, not merely by intent: Setpgid process groups, signalling
+// a process group by negative PID, and reading /proc/<pid>/cmdline have no
+// portable equivalent. The constraint makes a build on another OS report
+// "no Go files" rather than fail with a page of undefined symbols.
+
 // Package window launches an XScreenSaver module and makes its X11 window
 // fullscreen and always-on-top.
 //
@@ -42,12 +49,22 @@ const (
 	moduleBinDir = "/usr/libexec/xscreensaver/"
 )
 
+// pkill is the process-wide module backstop, indirected so tests can replace
+// it. Calling the real one from a unit test kills the module belonging to the
+// live daemon on a developer's own desktop -- t.Setenv isolates the state files
+// but nothing isolates a system-wide pkill.
+var pkill = pkillModules
+
 // Saver is a running module and its associated pointer-hiding process.
 type Saver struct {
 	cmd       *exec.Cmd
 	unclutter *exec.Cmd
 	module    string
-	winID     string
+
+	// unclutterDone is closed once unclutter has been reaped. It is nil when
+	// no unclutter is running, which reads as "not reaped" and is harmless:
+	// pidOf returns 0 for a nil cmd, so nothing is signalled either way.
+	unclutterDone chan struct{}
 
 	// done is closed once cmd has been reaped; waitErr is set before it is
 	// closed. It is a closed-channel broadcast rather than a value send
@@ -84,6 +101,12 @@ func LaunchContext(ctx context.Context, path string) (*Saver, error) {
 	// Own process group: a module may fork helpers, and Stop must be able to
 	// take the whole tree rather than orphaning children onto the screen.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Because cmd.Stderr is a ringBuffer rather than an *os.File, os/exec
+	// interposes a pipe and Wait will not return until every writer closes it.
+	// A forked helper that outlives the module holds that pipe open and would
+	// block Wait indefinitely. WaitDelay caps how long Wait waits on the pipe
+	// after the process itself has exited.
+	cmd.WaitDelay = stopGrace
 
 	s := &Saver{
 		cmd:    cmd,
@@ -106,7 +129,6 @@ func LaunchContext(ctx context.Context, path string) (*Saver, error) {
 		_ = s.Stop()
 		return nil, err
 	}
-	s.winID = id
 
 	if err := s.fullscreen(ctx, env, id); err != nil {
 		_ = s.Stop()
@@ -115,7 +137,7 @@ func LaunchContext(ctx context.Context, path string) (*Saver, error) {
 
 	// Pointer hiding is cosmetic. A missing or unhappy unclutter must not
 	// cost the user a working screensaver.
-	s.unclutter = startUnclutter(env)
+	s.unclutter, s.unclutterDone = startUnclutter(env)
 
 	if err := writeState(cmd.Process.Pid, module, pidOf(s.unclutter)); err != nil {
 		// Non-fatal, but `retrosaver stop` from another shell needs these.
@@ -167,6 +189,15 @@ func (s *Saver) findWindow(ctx context.Context, env []string) (string, error) {
 
 	select {
 	case r := <-res:
+		// Cancelling ctx kills xdotool, so r.err may be nothing but the
+		// cancellation surfacing as a signal. Both this case and ctx.Done()
+		// are ready then and select picks between them at random, so report
+		// the cancellation explicitly: otherwise an abandoned launch looks
+		// like a broken module about half the time, and the daemon spends its
+		// single retry on it.
+		if err := ctx.Err(); errors.Is(err, context.Canceled) {
+			return "", err
+		}
 		if r.err != nil {
 			return "", fmt.Errorf("%w: %s: xdotool: %v", ErrNoWindow, s.module, r.err)
 		}
@@ -228,7 +259,9 @@ func (s *Saver) fullscreen(ctx context.Context, env []string, id string) error {
 // package installs /usr/bin/unclutter-xfixes and declares no
 // Provides: unclutter, so the spec's literal "unclutter" is not present on a
 // correctly dependency-satisfied install.
-func startUnclutter(env []string) *exec.Cmd {
+// The returned channel is closed once the process has been reaped, so Stop can
+// tell a live PID from a recycled one.
+func startUnclutter(env []string) (*exec.Cmd, chan struct{}) {
 	var bin string
 	for _, name := range []string{"unclutter-xfixes", "unclutter"} {
 		if p, err := exec.LookPath(name); err == nil {
@@ -238,7 +271,7 @@ func startUnclutter(env []string) *exec.Cmd {
 	}
 	if bin == "" {
 		slog.Warn("no unclutter binary found; the pointer will stay visible")
-		return nil
+		return nil, nil
 	}
 
 	cmd := exec.Command(bin, "--timeout", "0", "--jitter", "0")
@@ -246,11 +279,15 @@ func startUnclutter(env []string) *exec.Cmd {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		slog.Warn("starting unclutter", "bin", bin, "err", err)
-		return nil
+		return nil, nil
 	}
 	// Reap it so a short-lived failure does not become a zombie.
-	go func() { _ = cmd.Wait() }()
-	return cmd
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
+	return cmd, done
 }
 
 // Process returns the module's OS process, so the daemon can hold it directly
@@ -272,12 +309,19 @@ func (s *Saver) Stop() error {
 		var errs []error
 
 		// unclutter first. It hides the pointer globally while it runs, so
-		// outliving the module would be a visible bug.
-		if p := pidOf(s.unclutter); p > 0 {
+		// outliving the module would be a visible bug. Skip it once reaped,
+		// for the same PID-recycling reason as the module below.
+		if p := pidOf(s.unclutter); p > 0 && !closed(s.unclutterDone) {
 			_ = syscall.Kill(-p, syscall.SIGTERM)
 		}
 
-		if p := s.Process(); p != nil {
+		// Never signal a PID belonging to an already-reaped process. Once the
+		// reaper goroutine has run, the kernel may have handed that number to
+		// something unrelated, and -pid would then hit whatever process group
+		// now holds it. This is the same hazard processMatches guards for PIDs
+		// read off disk, reached by a different route: LaunchContext calls
+		// Stop on exactly the path where the module has just been reaped.
+		if p := s.Process(); p != nil && !s.reaped() {
 			// A negative PID signals the whole process group created with
 			// Setpgid, so forked helpers go too.
 			_ = syscall.Kill(-p.Pid, syscall.SIGTERM)
@@ -285,7 +329,16 @@ func (s *Saver) Stop() error {
 			case <-s.done:
 			case <-time.After(stopGrace):
 				_ = syscall.Kill(-p.Pid, syscall.SIGKILL)
-				<-s.done
+				// Bounded, not a bare receive. cmd.Stderr is a ringBuffer, so
+				// os/exec interposes a pipe and Wait blocks until every writer
+				// closes it -- a grandchild that escaped the process group
+				// would wedge Wait, therefore Stop, therefore the daemon's
+				// whole teardown. cmd.WaitDelay makes the runtime give up on
+				// the pipe, and this select bounds the wait regardless.
+				select {
+				case <-s.done:
+				case <-time.After(stopGrace):
+				}
 			}
 		}
 
@@ -293,6 +346,23 @@ func (s *Saver) Stop() error {
 		s.stopErr = errors.Join(errs...)
 	})
 	return s.stopErr
+}
+
+// reaped reports whether the module process has already been waited on.
+func (s *Saver) reaped() bool { return closed(s.done) }
+
+// closed reports whether ch has been closed. A nil channel reports false:
+// there was no process, so there is nothing that could have been reaped.
+func closed(ch <-chan struct{}) bool {
+	if ch == nil {
+		return false
+	}
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
 }
 
 func pidOf(cmd *exec.Cmd) int {
@@ -322,7 +392,7 @@ func StopRunning() error {
 	}
 
 	// Backstop for anything the state files lost track of.
-	if err := pkillModules(); err != nil {
+	if err := pkill(); err != nil {
 		errs = append(errs, err)
 	}
 	errs = append(errs, clearState())
@@ -330,8 +400,13 @@ func StopRunning() error {
 }
 
 // pkillModules kills any straggling module by executable prefix.
-func pkillModules() error {
-	cmd := exec.Command("pkill", "-f", "^"+moduleBinDir)
+func pkillModules() error { return pkillPrefix(moduleBinDir) }
+
+// pkillPrefix is pkillModules with the match prefix supplied, so a test can
+// exercise the exit-code handling against a prefix that matches nothing real
+// instead of firing a system-wide pkill at the module directory.
+func pkillPrefix(prefix string) error {
+	cmd := exec.Command("pkill", "-f", "^"+prefix)
 	err := cmd.Run()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && exit.ExitCode() == 1 {

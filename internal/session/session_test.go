@@ -347,3 +347,45 @@ func readTrimmed(t *testing.T, path string) string {
 	}
 	return strings.TrimSpace(string(b))
 }
+
+// SaveIdleDelay must not persist a value it read before another writer won.
+//
+// This models the failure the O_EXCL create exists to prevent: a second setup,
+// or a setup racing the unit's ExecStopPost, where the file appears after this
+// caller decided it was absent. The run hook creates the file at exactly that
+// moment -- while IdleDelay is in flight -- and reports 0, the value the daemon
+// leaves behind while it owns the idle policy.
+//
+// With a stat-then-write the check has already passed, so 0 is written over the
+// real original and the user's auto-lock is destroyed permanently. With an
+// O_EXCL create the write simply loses and the saved 300 survives.
+func TestSaveIdleDelayLosesRacesInsteadOfOverwriting(t *testing.T) {
+	dir := configHome(t)
+	path := filepath.Join(dir, "retrosaver", "idle-delay.orig")
+
+	prev := run
+	run = func(name string, args ...string) (string, error) {
+		// The rival writer lands between our check and our write.
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("300\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return "uint32 0", nil // what the daemon leaves while it owns idle-delay
+	}
+	t.Cleanup(func() { run = prev })
+
+	if err := SaveIdleDelay(); err != nil {
+		t.Fatalf("SaveIdleDelay() = %v", err)
+	}
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(b)); got != "300" {
+		t.Errorf("saved idle-delay = %q, want \"300\": a losing writer overwrote the original",
+			got)
+	}
+}
