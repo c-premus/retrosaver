@@ -26,6 +26,13 @@ license: MIT
 # NOT Markdown -- keep it in sync with CHANGELOG.md by hand.
 changelog: ./changelog.yaml
 
+# Narrow on purpose. Per-user installation stays in `retrosaver setup`, which
+# needs the user's session bus and their consent. The postinst only refreshes
+# systemd's unit cache and restarts an already-running daemon, so an upgrade
+# does not leave the old binary running with /proc/<pid>/exe as "(deleted)".
+scripts:
+  postinstall: ./scripts/postinstall.sh
+
 depends:
   # The display modules themselves. Hard dependencies so the tool works
   # immediately after install: atlantis lives in -gl-extra, flame and ifs in

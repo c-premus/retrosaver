@@ -71,6 +71,21 @@ autostart and emit errors alongside this one.
 `systemd --user` unit and takes ownership of `idle-delay` — all per-user operations that
 need your own session bus, which a package's root install script cannot do correctly.
 
+Upgrading is just `apt install` again — `retrosaver setup` does not need re-running, and
+the package restarts the daemon for you so the new binary actually takes effect.
+
+> Packages built before 0.0.3 did not do that. If you are upgrading from 0.0.1 or 0.0.2,
+> the old daemon keeps running until you restart it once:
+>
+> ```bash
+> systemctl --user daemon-reload
+> systemctl --user restart retrosaver
+> ```
+>
+> To check which binary is actually running:
+> `ls -l /proc/$(systemctl --user show retrosaver -p MainPID --value)/exe` — if it ends in
+> `(deleted)`, the process predates the installed package.
+
 To reverse it:
 
 ```bash

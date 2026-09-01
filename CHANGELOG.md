@@ -11,6 +11,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Upgrading the package now restarts the daemon. `apt install` replaces
+  `/usr/bin/retrosaver` on disk but does not restart a `systemd --user` service, so the old
+  process kept running — `/proc/<pid>/exe` reading `"(deleted)"` — and a newly installed
+  feature was on disk but not actually running. A new `postinst` runs
+  `deb-systemd-invoke --user daemon-reload` and `--user restart retrosaver.service`, which
+  also makes a changed unit file visible to systemd. Users who never ran `retrosaver setup`
+  are skipped, so this cannot start the daemon for someone who did not opt in.
+
 ## [0.0.2] - 2026-09-01
 
 ### Added
