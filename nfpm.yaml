@@ -22,6 +22,10 @@ vendor: Chris
 homepage: https://github.com/c-premus/retrosaver
 license: MIT
 
+# Rendered into the package's changelog.Debian.gz. This is goreleaser/chglog format,
+# NOT Markdown -- keep it in sync with CHANGELOG.md by hand.
+changelog: ./changelog.yaml
+
 depends:
   # The display modules themselves. Hard dependencies so the tool works
   # immediately after install: atlantis lives in -gl-extra, flame and ifs in
@@ -68,5 +72,18 @@ contents:
 
   - src: ./LICENSE
     dst: /usr/share/doc/retrosaver/copyright
+    file_info:
+      mode: 0644
+
+  # Debian Policy 12.1 wants a manual page for every program in /usr/bin. nfpm does
+  # not compress man pages, so release.yaml gzips it into dist/ before packaging.
+  - src: ./dist/retrosaver.1.gz
+    dst: /usr/share/man/man1/retrosaver.1.gz
+    file_info:
+      mode: 0644
+
+  # Without this an apt-installed user has `retrosaver help` and nothing else.
+  - src: ./README.md
+    dst: /usr/share/doc/retrosaver/README.md
     file_info:
       mode: 0644

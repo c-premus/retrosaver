@@ -1,0 +1,18 @@
+# Package changelog, in goreleaser/chglog format. nfpm reads this via the `changelog:`
+# key in nfpm.yaml and renders it into the package's changelog.Debian.gz.
+#
+# Keep this in sync with CHANGELOG.md by hand -- that file is the human-facing record in
+# Keep a Changelog format, and nfpm cannot read Markdown. Nothing enforces the match.
+#
+# Keep each `note` on a SINGLE line. chglog renders every subsequent line of a note as a
+# "-" sub-bullet, which makes a wrapped sentence look like a broken list.
+- semver: 0.0.1
+  date: 2026-09-01T00:00:00Z
+  packager: Chris <chris@example.com>
+  changes:
+    - note: "First release: an idle daemon that runs classic XScreenSaver display modules on GNOME under Wayland, driven by org.gnome.Mutter.IdleMonitor."
+    - note: "Three stages timed from idle, each torn down and re-armed by any user activity: a random module fullscreen at 5 minutes, GNOME's lock screen at 20, display off at 22."
+    - note: "One static binary with six subcommands: daemon, run, stop, list, setup, teardown."
+    - note: "Per-user installation lives in `retrosaver setup` and `teardown`, not in maintainer scripts, because enabling a systemd --user unit needs the user's own session bus."
+    - note: "Not a screen locker, and cannot be one under XWayland; the lock stage hands off to GNOME's own lock screen."
+    - note: "Note that setup sets idle-delay to 0, so there is no auto-lock while the daemon is not running."

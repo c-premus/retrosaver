@@ -1,0 +1,187 @@
+.TH RETROSAVER 1 "2026-09-01" "retrosaver 0.0.1" "User Commands"
+.SH NAME
+retrosaver \- retro screensavers for GNOME on Wayland
+.SH SYNOPSIS
+.B retrosaver
+.I command
+.RI [ flags ]
+.SH DESCRIPTION
+.B retrosaver
+brings back late\-1990s XScreenSaver display modules \(em fractals, the
+.B atlantis
+fish tank, flying toasters, spinning pipes \(em on GNOME desktops running Wayland, where
+the traditional screensaver daemon no longer functions.
+.PP
+It does not fork, patch, or vendor XScreenSaver. It reuses the display modules that Debian
+and Ubuntu already package, and supplies only the piece GNOME dropped: an idle trigger and
+a fullscreen wrapper. All the artwork belongs to XScreenSaver.
+.PP
+Idle is detected through
+.BR org.gnome.Mutter.IdleMonitor ,
+the only idle signal GNOME exposes, since its compositor implements no Wayland idle
+protocol.
+.SS Stages
+Three stages, all timed from when the session goes idle. Any user activity at any stage
+tears everything down and re\-arms from zero.
+.TP
+.B Saver
+5 minutes idle by default. Launch a random display module fullscreen, always\-on\-top,
+with the pointer hidden.
+.TP
+.B Lock
+20 minutes idle by default. Kill the module and hand off to GNOME's own lock screen via
+.BR "loginctl lock\-session" .
+.TP
+.B Blank
+22 minutes idle by default. Power the display off, by handing
+.B idle\-delay
+back to gnome\-shell rather than poking DPMS behind the compositor's back.
+.SH COMMANDS
+.SS Runtime
+.TP
+.B daemon
+Run the idle state machine. Normally started by the systemd user unit, not by hand.
+.TP
+.BI run " [module]"
+Launch one module fullscreen. Picks at random when
+.I module
+is omitted. Refuses to stack a second module over a running one.
+.TP
+.B stop
+Tear down a running module and clear the runtime state. Safe at any time, and a clean
+no\-op when nothing is running.
+.TP
+.B list
+Print the discovered, selectable modules, one per line.
+.SS Installation
+.TP
+.B setup
+Run the preflight checks, write a config if none exists, enable the systemd user unit, and
+take ownership of
+.BR idle\-delay ,
+saving the original value first.
+.TP
+.B teardown
+Reverse
+.BR setup :
+disable the unit and restore the saved
+.BR idle\-delay .
+.SS Other
+.TP
+.B version
+Print the version and exit.
+.SH CONFIGURATION
+.B retrosaver
+reads
+.IR ~/.config/retrosaver/retrosaver.conf .
+The file is shell\-shaped
+.IR KEY=value ,
+but it is
+.B parsed, never sourced
+\(em it lives in
+.I $HOME
+and is never executed. A commented example is installed at
+.IR /usr/share/retrosaver/retrosaver.conf.example .
+.TP
+.B SAVER_DELAY
+Seconds of idle before the screensaver starts. Default 300.
+.TP
+.B LOCK_AFTER
+Seconds after the screensaver starts before the session locks. Default 900.
+.B 0
+disables locking.
+.TP
+.B BLANK_AFTER
+Seconds after locking before the display powers off. Default 120.
+.B 0
+disables blanking, as does
+.B LOCK_AFTER=0
+\(em blanking without locking is meaningless.
+.TP
+.B EXCLUDE
+Space\-separated module names never to pick. The default excludes modules that need image
+assets, network access, or elevated capabilities and misbehave standalone.
+.TP
+.B INCLUDE
+Optional. If non\-empty, pick only from this space\-separated list.
+.PP
+Modules are discovered by intersecting the basenames of
+.I /usr/share/xscreensaver/config/*.xml
+with the executables in
+.IR /usr/libexec/xscreensaver/ ,
+so helper binaries are never selected and the list follows the installed packages.
+.SH FILES
+.TP
+.I ~/.config/retrosaver/retrosaver.conf
+User configuration.
+.TP
+.I ~/.config/retrosaver/idle\-delay.orig
+The
+.B idle\-delay
+value saved at
+.BR setup ,
+restored by
+.BR teardown .
+.TP
+.I /usr/share/retrosaver/retrosaver.conf.example
+Commented example configuration.
+.TP
+.I /usr/lib/systemd/user/retrosaver.service
+The systemd user unit. Shipped by the package but deliberately not enabled;
+.B retrosaver setup
+enables it, because enabling a
+.B systemd \-\-user
+unit needs the user's own session bus.
+.TP
+.I $XDG_RUNTIME_DIR/retrosaver.pid
+PID of the running module. Every PID read back is checked against
+.I /proc/<pid>/cmdline
+before being signalled, because the file can be stale after a crash and PIDs are recycled.
+.SH CAVEATS
+.SS This is not a screen locker
+A display module is an ordinary X11 window and cannot secure the session; X11 grabs do not
+work under XWayland. Real security comes from the lock stage handing off to GNOME's own
+lock screen. Anyone wanting the screensaver itself to lock is out of luck on Wayland, by
+design.
+.SS The daemon owns the idle policy
+.B setup
+sets
+.B org.gnome.desktop.session idle\-delay
+to
+.BR 0 .
+That is what stops gnome\-shell blanking the screen out from under the screensaver, and it
+also disables GNOME's idle\-dim.
+.B "Consequently, if the daemon is not running there is no auto\-lock at all."
+The unit uses
+.B Restart=always
+and
+.B ExecStopPost
+to restore
+.B idle\-delay
+on any exit, and
+.B teardown
+restores it permanently.
+.SS Other limitations
+Modules that grab and distort a desktop screenshot render a solid colour, because
+.B grim
+does not work under GNOME's compositor. GL modules run through XWayland and keep the GPU
+awake. On a laptop,
+.B sleep\-inactive\-battery\-timeout
+may suspend the machine before the lock and blank stages land.
+.SH DIAGNOSTICS
+Every state transition logs to standard error, so
+.B journalctl \-\-user \-u retrosaver
+reads as a clear trace.
+.SH SEE ALSO
+.BR xscreensaver (1),
+.BR loginctl (1),
+.BR gsettings (1),
+.BR systemd.unit (5)
+.PP
+Project home: https://github.com/c-premus/retrosaver
+.SH AUTHOR
+Chris <chris@example.com>.
+.PP
+The display modules themselves are XScreenSaver, by Jamie Zawinski and contributors.
+.B retrosaver
+is only the idle trigger and the fullscreen wrapper around them.
