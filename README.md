@@ -12,7 +12,7 @@ trigger and a fullscreen wrapper. `retrosaver` is glue. All the actual artwork b
 XScreenSaver.
 
 > **Status: implemented and verified on the reference host.** All the pieces are written
-> and unit-tested, and **all six steps** of the `docs/spec.md` §8 procedure pass against a
+> and unit-tested, and **all six steps** of the manual verification procedure pass against a
 > live GNOME 50.1 session — idle detection, session control, the fullscreen wrapper, the
 > full saver → lock → blank → teardown sequence, and reboot persistence.
 

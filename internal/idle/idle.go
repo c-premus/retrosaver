@@ -1,7 +1,7 @@
 // Package idle wraps org.gnome.Mutter.IdleMonitor on the session bus.
 //
 // GNOME's compositor exposes no Wayland idle protocol, so this D-Bus interface
-// is the only idle signal available. See docs/spec.md section 6.3.
+// is the only idle signal available.
 //
 // Interface reference:
 //

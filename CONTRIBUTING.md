@@ -48,7 +48,9 @@ and the state machine against fakes. They never touch X, D-Bus or systemd, and n
 CI — there is no Mutter, no session bus and no XWayland on a runner.
 
 Anything involving a real window, a real idle timer or a real lock is proven only by running
-the manual procedure in [docs/spec.md](docs/spec.md) §8 on an actual GNOME/Wayland session.
+the manual verification procedure in
+[docs/development.md](docs/development.md#manual-verification) on an actual GNOME/Wayland
+session.
 If your change touches `internal/idle`, `internal/window`, `internal/session` or
 `internal/daemon`, please say in the pull request whether you ran it and what happened.
 

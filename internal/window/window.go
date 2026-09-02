@@ -9,7 +9,7 @@
 // fullscreen and always-on-top.
 //
 // Modules are ordinary X11 clients running under XWayland. Mutter implements
-// EWMH for them, which is why wmctrl works. See docs/spec.md section 6.2.
+// EWMH for them, which is why wmctrl works.
 package window
 
 import (

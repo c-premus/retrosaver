@@ -2,7 +2,7 @@
 // setting that controls blanking.
 //
 // retrosaver deliberately reuses GNOME's own blanking and locking paths rather
-// than poking DPMS behind the compositor's back. See docs/spec.md section 6.3.
+// than poking DPMS behind the compositor's back.
 //
 // Everything here shells out. That is not laziness: GSettings' own API is
 // libgio, which means cgo, which would end CGO_ENABLED=0 and the static

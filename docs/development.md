@@ -21,7 +21,8 @@ avoid the misleading connotation.
 **Status: implemented and verified on the host.** All seven packages are real and
 unit-tested, and no subcommand returns `ErrNotImplemented`. `idle`, `session`, `window` and
 the end-to-end state machine have all been verified against a live GNOME 50.1 session —
-**all six steps of `docs/spec.md` §8**, including the full saver → lock → blank → teardown
+**all six steps of the manual verification procedure below**, including the full
+saver → lock → blank → teardown
 sequence, a second cycle, and reboot persistence from an installed `.deb`.
 
 ### Architecture
@@ -44,13 +45,10 @@ internal/window/     wmctrl / xdotool / unclutter wrappers
 internal/session/    loginctl lock-session, gsettings idle-delay
 internal/watch/      inotify watch on the config file, for live reload
 internal/daemon/     the four-watch state machine
-docs/spec.md         the original implementation specification
 ```
 
-`docs/spec.md` is the behavioural source of truth, and the Go doc comments cite it by
-section number. Its §5 and §6.6 are **superseded** — they describe the original Python +
-bash + `install.sh` design, not the Go one-binary/`.deb` one. Its §3, §6.2–6.4, §7 and §8
-still hold.
+The behavioural contract is described here and in `README.md`; the manual verification
+procedure that actually proves it is under **Manual verification** below.
 
 ## Development commands
 
@@ -99,6 +97,45 @@ gzip -9 -n -c docs/retrosaver.1 > dist/retrosaver.1.gz
 cp dist/retrosaver-linux-amd64 dist/retrosaver
 VERSION=0.0.1 GOARCH=amd64 nfpm pkg --packager deb --target dist/
 ```
+
+## Manual verification
+
+**A green `go test` is not evidence the screensaver works.** The unit tests cover pure logic
+and the state machine against fakes; they never touch X, D-Bus or systemd, and neither does
+CI. Anything involving a real window, a real idle timer or a real lock is proven only by
+running this procedure on an actual GNOME/Wayland session.
+
+Six steps, in order. They are written against the installed package; the commands assume
+`retrosaver setup` has been run.
+
+1. **A module runs at all.**
+   `DISPLAY=:0 /usr/libexec/xscreensaver/atlantis -window` → a window of swimming dolphins
+   and sharks. Repeat with `flame` and `ifs`.
+2. **The fullscreen wrapper.** `retrosaver run atlantis` → covers the screen, sits above the
+   top bar, pointer hidden. `retrosaver stop` clears it.
+3. **Random selection.** Run `retrosaver run` five times: different modules each time, never
+   a helper binary and never an excluded one.
+4. **The full state machine, on compressed timings.** Set `SAVER_DELAY=15`, `LOCK_AFTER=20`,
+   `BLANK_AFTER=10`, then `systemctl --user restart retrosaver`. Leave the machine alone
+   with `journalctl --user -u retrosaver -f` visible from another device. Expect the saver
+   at 15 s, the lock at 35 s, the display off at 45 s. Touch the trackpad mid-sequence and
+   confirm a clean teardown with `idle-delay` back to `0`.
+5. **Restore the real timings** and restart.
+6. **Reboot**, log in, then `systemctl --user status retrosaver` → `active (running)`.
+
+> Step 6 must be checked *after* logging in. `Linger=no`, so the `systemd --user` manager
+> only starts at login — a unit that looks dead at the greeter is expected, not a failure.
+
+Two things that cannot be tested any other way, and one that cannot be tested at all:
+
+- **User activity cannot be faked.** Mutter gates `ResetIdletime` behind
+  `MUTTER_DEBUG_RESET_IDLETIME`, and injecting XTEST input with `xdotool mousemove` does not
+  move the idle clock either, because the idle monitor watches libinput rather than
+  synthetic X events. Step 4 needs a human at the keyboard.
+- **Live tests are gated on an environment variable**, not a build tag, so `go test ./...`
+  stays green anywhere while one command exercises them for real:
+  `RETROSAVER_LIVE=1 go test ./internal/... -run Live -v`. `TestLiveLock` additionally needs
+  `RETROSAVER_LIVE_LOCK=1`, because it genuinely locks the screen.
 
 ## Code standards
 
@@ -180,10 +217,10 @@ VERSION=0.0.1 GOARCH=amd64 nfpm pkg --packager deb --target dist/
   `internal/config` uses a line parser. Do not "simplify" this by shelling out.
 - **The devcontainer cannot run or integration-test the daemon.** No Mutter, no session
   bus, no XWayland, no `systemd --user`. It builds, vets, unit-tests and packages. Real
-  verification is the manual procedure in `docs/spec.md` (§8), on the host. See `.devcontainer/README.md`.
+  verification is the manual procedure below, on the host. See `.devcontainer/README.md`.
 - **A green `go test` is not evidence the screensaver works.** The unit tests cover pure
   logic and the state machine against fakes; they never touch X, D-Bus or systemd. Anything
-  involving a real window is proven only by `docs/spec.md` §8 on a host.
+  involving a real window is proven only by the manual verification procedure on a host.
 - **Live tests are gated on `RETROSAVER_LIVE`, not a build tag**, so `go test ./...` stays
   green anywhere while one command exercises them on a real session:
   `RETROSAVER_LIVE=1 go test ./internal/... -run Live -v`. `TestLiveLock` needs
