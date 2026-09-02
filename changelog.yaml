@@ -6,6 +6,19 @@
 #
 # Keep each `note` on a SINGLE line. chglog renders every subsequent line of a note as a
 # "-" sub-bullet, which makes a wrapped sentence look like a broken list.
+- semver: 0.1.1
+  date: 2026-09-02T00:00:00Z
+  packager: Chris <63758245+c-premus@users.noreply.github.com>
+  changes:
+    - note: "Update module golang.org/x/sys to v0.44.0 [security]"
+    - note: "Map the bot identities in the mirror's mailmap"
+    - note: "Stop the ref normalisation failing when there is nothing to drop"
+    - note: "Update module golang.org/x/vuln to v1.7.0"
+    - note: "Update go toolchain directive to v1.27.1"
+    - note: "Update dependency dominikh/go-tools to v2026"
+    - note: "Point user-facing metadata at the public GitHub project"
+    - note: "Prune AI tooling to what this project uses"
+
 - semver: 0.1.0
   date: 2026-09-02T00:00:00Z
   packager: Chris <63758245+c-premus@users.noreply.github.com>

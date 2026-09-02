@@ -11,6 +11,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-02
+
+### Fixed
+
+- Update module golang.org/x/sys to v0.44.0 [security]
+- Map the bot identities in the mirror's mailmap
+- Stop the ref normalisation failing when there is nothing to drop
+
+### Maintenance
+
+- Update module golang.org/x/vuln to v1.7.0
+- Update go toolchain directive to v1.27.1
+- Update dependency dominikh/go-tools to v2026
+- Point user-facing metadata at the public GitHub project
+- Prune AI tooling to what this project uses
+
 ## [0.1.0] - 2026-09-02
 
 ### Added
@@ -103,7 +119,8 @@ First release.
 - GNOME on Wayland only. KDE and wlroots support the Wayland idle protocols, so upstream
   xscreensaver 6.11+ works there natively.
 
-[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/c-premus/retrosaver/releases/tag/v0.1.1
 [0.1.0]: https://github.com/c-premus/retrosaver/releases/tag/v0.1.0
 [0.0.4]: https://github.com/c-premus/retrosaver/releases/tag/v0.0.4
 [0.0.3]: https://github.com/c-premus/retrosaver/releases/tag/v0.0.3
