@@ -27,9 +27,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # go-version-file, not a literal version. setup-go prefers go.mod's
+      # `toolchain` directive over `go` when both are present, so this builds
+      # with exactly the toolchain go.mod names rather than whatever patch
+      # release setup-go happens to resolve. go.mod's `go` line stays what it
+      # says it is: a language floor, not a build version.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version-file: go.mod
           cache: true
 
       - name: gofmt (GATE)
@@ -71,6 +76,19 @@ jobs:
       # and those paths come from a directory intersection, not user input.
       - name: staticcheck (GATE)
         run: go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
+
+      # Catches vulnerabilities reachable from this module's own code, including
+      # the Go standard library compiled into the shipped binary. Automated
+      # dependency updates cannot cover that case: stdlib advisories file under
+      # OSV package `stdlib`, which matches no dependency name, so nothing
+      # keyed on the module graph will ever raise one.
+      #
+      # Pinned rather than @latest, like staticcheck above. Note the pin covers
+      # the tool, not the vulnerability database -- that floats by design, so
+      # unlike staticcheck this gate can legitimately fail a pull request that
+      # changed nothing, when a new advisory is published.
+      - name: govulncheck (GATE)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.2.0 ./...
 
       - name: shellcheck (GATE)
         run: |

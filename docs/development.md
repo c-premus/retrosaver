@@ -160,6 +160,48 @@ Two things that cannot be tested any other way, and one that cannot be tested at
   what part of the GNOME stack it touches.
 - Shell scripts: `set -o errexit -o nounset -o pipefail`, and they must pass `shellcheck`.
 
+## Dependency updates
+
+Renovate keeps the dependencies and the pinned tooling current. Both its configuration and
+the job that runs it live on the upstream instance, so what follows is the policy rather
+than a pointer to a file — but the rules it enforces apply to any change made here, and a
+contributor will meet them as automated pull requests.
+
+**Renovate targets the default branch directly.** Non-major updates merge themselves once
+CI is green; **major updates always wait for a human**. New releases are held for three
+days before an update is even proposed (`minimumReleaseAge`), so a compromised or
+immediately-yanked upload does not land here on its release day. Security advisories skip
+that wait.
+
+Four constraints shape it. Each is there because omitting it failed *silently* somewhere
+first, which is why they are worth knowing even if you never touch the config.
+
+- **`postUpdateOptions: ["gomodTidy"]` is mandatory, not a preference.** CI gates on
+  `go mod tidy -diff`, and the gomod updater appends new `go.sum` entries without pruning
+  the ones they replace. Drop it and *every* dependency pull request opens red against a
+  gate unrelated to its change. The proof it is working is that a dependency diff
+  **removes** `go.sum` lines as well as adding them.
+- **The `digest` / `pin` / `pinDigest` / `lockFileMaintenance` age-gate exemption must
+  stay.** Those update types carry no release timestamp to age against, and an absent
+  timestamp counts as "not yet passed" — so with `internalChecksFilter: "strict"` they are
+  held *indefinitely*, parking on the dependency dashboard with no branch, no pull request
+  and no error logged anywhere.
+- **Nothing keyed on the module graph can see a Go standard library CVE.** Those
+  advisories file under OSV package `stdlib`, which matches no dependency name. The
+  `govulncheck` gate in CI is what covers that class, and the reason `go.mod`'s
+  `toolchain` directive is Renovate-managed with the age gate waived — a Go patch release
+  is a single trusted upstream shipping security fixes, which the gate cannot tell apart
+  from an arbitrary new upload.
+- **`go.mod`'s `go` directive is deliberately excluded.** It is a language floor, not a
+  build version, and raising it breaks exactly the host it exists for. The `toolchain`
+  directive beneath it is the one that moves.
+
+Three version pins are invisible to every built-in updater and are tracked by regex
+instead — `staticcheck` and `govulncheck` (both `go run <module>@<tag>` arguments) and
+`NFPM_VERSION`. Each appears in both the upstream and mirrored copy of a workflow, and one
+rule covers both so they cannot drift apart. **A new hardcoded version pin in a workflow
+needs a matching rule**, or it silently rots.
+
 ## Common gotchas
 
 - **`idle-delay 0` makes retrosaver the owner of the entire idle policy.** That is what
