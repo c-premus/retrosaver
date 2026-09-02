@@ -6,6 +6,15 @@
 #
 # Keep each `note` on a SINGLE line. chglog renders every subsequent line of a note as a
 # "-" sub-bullet, which makes a wrapped sentence look like a broken list.
+- semver: 0.1.0
+  date: 2026-09-02T00:00:00Z
+  packager: Chris <chris@example.com>
+  changes:
+    - note: "Publish .debs to Forgejo's Debian registry as an apt repo"
+    - note: "Return Defaults from the config-path failure too"
+    - note: "Close silent-failure and process-lifecycle paths"
+    - note: "Align conventions, close test gaps, and widen the CI gates"
+
 - semver: 0.0.4
   date: 2026-09-01T00:00:00Z
   packager: Chris <chris@example.com>

@@ -11,6 +11,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-02
+
+### Added
+
+- Publish .debs to Forgejo's Debian registry as an apt repo
+
+### Fixed
+
+- Return Defaults from the config-path failure too
+- Close silent-failure and process-lifecycle paths
+
+### Maintenance
+
+- Align conventions, close test gaps, and widen the CI gates
+
 ## [0.0.4] - 2026-09-01
 
 ### Fixed
@@ -88,7 +103,8 @@ First release.
 - GNOME on Wayland only. KDE and wlroots support the Wayland idle protocols, so upstream
   xscreensaver 6.11+ works there natively.
 
-[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.0.4...HEAD
+[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/c-premus/retrosaver/releases/tag/v0.1.0
 [0.0.4]: https://github.com/c-premus/retrosaver/releases/tag/v0.0.4
 [0.0.3]: https://github.com/c-premus/retrosaver/releases/tag/v0.0.3
 [0.0.2]: https://github.com/c-premus/retrosaver/releases/tag/v0.0.2
