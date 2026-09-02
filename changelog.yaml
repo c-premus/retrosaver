@@ -8,7 +8,7 @@
 # "-" sub-bullet, which makes a wrapped sentence look like a broken list.
 - semver: 0.1.0
   date: 2026-09-02T00:00:00Z
-  packager: Chris <chris@example.com>
+  packager: Chris <63758245+c-premus@users.noreply.github.com>
   changes:
     - note: "Publish .debs to Forgejo's Debian registry as an apt repo"
     - note: "Return Defaults from the config-path failure too"
@@ -17,13 +17,13 @@
 
 - semver: 0.0.4
   date: 2026-09-01T00:00:00Z
-  packager: Chris <chris@example.com>
+  packager: Chris <63758245+c-premus@users.noreply.github.com>
   changes:
     - note: "Stop release.yaml racing itself, and fail loudly"
 
 - semver: 0.0.3
   date: 2026-09-01T00:00:00Z
-  packager: Chris <chris@example.com>
+  packager: Chris <63758245+c-premus@users.noreply.github.com>
   changes:
     - note: "Add a dispatchable version-release workflow"
     - note: "Drop the unused hash variable in generate-changelog.sh"
@@ -31,7 +31,7 @@
 
 - semver: 0.0.2
   date: 2026-09-01T00:00:00Z
-  packager: Chris <chris@example.com>
+  packager: Chris <63758245+c-premus@users.noreply.github.com>
   changes:
     - note: "The daemon now re-reads its config without a restart: it watches the config file with inotify, and also reloads on SIGHUP via `systemctl --user reload retrosaver`."
     - note: "A reload behaves like user activity -- any module on screen is torn down and the stages re-arm from zero."
@@ -39,7 +39,7 @@
 
 - semver: 0.0.1
   date: 2026-09-01T00:00:00Z
-  packager: Chris <chris@example.com>
+  packager: Chris <63758245+c-premus@users.noreply.github.com>
   changes:
     - note: "First release: an idle daemon that runs classic XScreenSaver display modules on GNOME under Wayland, driven by org.gnome.Mutter.IdleMonitor."
     - note: "Three stages timed from idle, each torn down and re-armed by any user activity: a random module fullscreen at 5 minutes, GNOME's lock screen at 20, display off at 22."

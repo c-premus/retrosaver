@@ -10,7 +10,7 @@ arch: ${GOARCH}
 version: ${VERSION}
 section: x11
 priority: optional
-maintainer: Chris <chris@example.com>
+maintainer: Chris <63758245+c-premus@users.noreply.github.com>
 description: |
   Retro screensavers for GNOME on Wayland.
   Brings back late-1990s XScreenSaver display modules (fractals, the atlantis

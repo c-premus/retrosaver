@@ -31,7 +31,7 @@ set -euo pipefail
 VERSION=""
 SINCE=""
 FORMAT="markdown"
-PACKAGER="${PACKAGER:-Chris <chris@example.com>}"
+PACKAGER="${PACKAGER:-Chris <63758245+c-premus@users.noreply.github.com>}"
 
 while [ "$#" -gt 0 ]; do
     case "$1" in

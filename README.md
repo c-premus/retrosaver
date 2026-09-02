@@ -55,44 +55,10 @@ All three delays are configurable, and stages 2 and 3 can be disabled individual
 
 ## Install
 
-### From the apt repository (recommended)
-
-Subscribe once and upgrades arrive with your normal `apt upgrade`:
-
-```bash
-sudo install -d /etc/apt/keyrings
-curl -fsSL https://git.example.com/api/packages/chris/debian/repository.key \
-  | sudo tee /etc/apt/keyrings/forgejo-chris.asc > /dev/null
-
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/forgejo-chris.asc] https://git.example.com/api/packages/chris/debian stable main" | sudo tee /etc/apt/sources.list.d/retrosaver.list > /dev/null
-
-sudo apt update
-sudo apt install retrosaver
-retrosaver setup
-```
-
-`amd64` and `arm64` are both published, and `arch=` pins the entry to the one
-you are running. That matters only if you have a foreign architecture enabled —
-`i386`, for Steam or Wine, is the usual reason. Without the pin, apt asks this
-repository for an `i386` index it does not publish and says so:
-
-```text
-Notice: Skipping acquire of configured file 'main/binary-i386/Packages' as
-repository '.../chris/debian stable InRelease' doesn't support architecture 'i386'
-```
-
-That is a notice, not an error — apt installs the `amd64` package regardless —
-but the pin keeps it quiet. To silence it on an existing install, re-run the
-`echo` above.
-
-The single `stable` distribution is deliberate and works on any Debian or Ubuntu release —
-the binary is static and every dependency below exists across all of them, so
-per-codename repositories would be four index trees over one identical package.
-
 ### From a release asset
 
 Download the `.deb` for your architecture from the
-[latest release](https://github.com/c-premus/retrosaver/releases), then:
+[latest release](https://github.com/c-premus/retrosaver/releases/latest), then:
 
 ```bash
 sudo apt install ./retrosaver_<version>_amd64.deb
@@ -107,8 +73,9 @@ autostart and emit errors alongside this one.
 `systemd --user` unit and takes ownership of `idle-delay` — all per-user operations that
 need your own session bus, which a package's root install script cannot do correctly.
 
-Upgrading is just `apt install` again — `retrosaver setup` does not need re-running, and
-the package restarts the daemon for you so the new binary actually takes effect.
+Upgrading is the same command against a newer `.deb` — `retrosaver setup` does not need
+re-running, and the package restarts the daemon for you so the new binary actually takes
+effect.
 
 > Packages built before 0.0.3 did not do that. If you are upgrading from 0.0.1 or 0.0.2,
 > the old daemon keeps running until you restart it once:
