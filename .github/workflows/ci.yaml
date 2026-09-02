@@ -1,0 +1,84 @@
+name: CI
+
+# The public mirror's own CI. The canonical pipeline lives on the upstream
+# Forgejo instance; this exists so that forks build and contributor pull
+# requests opened here get checked, which a mirror with no workflows cannot do.
+#
+# Deliberately NOT a copy of the upstream file. The privacy guard that runs
+# upstream must never appear here: its pattern names the private hostnames it
+# guards, so publishing it would leak exactly what it exists to protect.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: gofmt (GATE)
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      # The dependency rule in AGENTS.md is "exactly two direct dependencies,
+      # both pure Go". This is the only thing that enforces it mechanically:
+      # -diff fails without writing, so an untidy or newly-grown go.mod cannot
+      # merge unnoticed.
+      - name: go mod tidy (GATE)
+        run: go mod tidy -diff
+
+      # CGO_ENABLED=0 only here: the shipped artifact must be static. Tests
+      # below run with cgo enabled so -race works.
+      - name: go build (GATE)
+        run: CGO_ENABLED=0 go build ./...
+
+      # release.yaml ships an arm64 .deb, but nothing else here ever compiles
+      # for it, so an arch-specific break would first surface at release time.
+      - name: go build arm64 (GATE)
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...
+
+      - name: go vet (GATE)
+        run: go vet ./...
+
+      - name: go test (GATE)
+        run: go test -race ./...
+
+      # Pinned, never @latest: a staticcheck release must not be able to redden
+      # a pull request that changed nothing. Bump this deliberately.
+      #
+      # Not gosec: it fires G204 on every exec.Command taking a module path,
+      # and those paths come from a directory intersection, not user input.
+      - name: staticcheck (GATE)
+        run: go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
+
+      - name: shellcheck (GATE)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          # git ls-files, not a hardcoded list: a fourth script must not be
+          # able to ship unchecked just because nobody updated this line.
+          mapfile -t scripts < <(git ls-files '*.sh')
+          printf 'checking %s\n' "${scripts[@]}"
+          shellcheck "${scripts[@]}"
+          bash -n tests/smoke.sh

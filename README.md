@@ -174,10 +174,13 @@ Mitigations, all implemented:
 
 ## Development
 
-See [`AGENTS.md`](AGENTS.md) for the full development guide, and
-[`.devcontainer/README.md`](.devcontainer/README.md) for the container's scope — notably
-that it **cannot** run or integration-test the daemon, since there is no Mutter, session
-bus, XWayland or `systemd --user` inside a container.
+Start with [`CONTRIBUTING.md`](CONTRIBUTING.md). See [`AGENTS.md`](AGENTS.md) for the full
+development guide, and [`.devcontainer/README.md`](.devcontainer/README.md) for the
+container's scope — notably that it **cannot** run or integration-test the daemon, since
+there is no Mutter, session bus, XWayland or `systemd --user` inside a container.
+
+Security policy, and a note on why this is not a screen locker, are in
+[`SECURITY.md`](SECURITY.md).
 
 ```bash
 go build ./...

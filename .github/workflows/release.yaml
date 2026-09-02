@@ -1,0 +1,154 @@
+name: Release
+
+# Builds the public release artifacts on the mirror itself, so that what a user
+# downloads is produced from the source they can read, by a run they can
+# inspect. The upstream Forgejo release workflow publishes to its own registry
+# and is not the source of these files.
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Recovery hatch: re-run a release without re-pushing its tag.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  # Both required by attest-build-provenance.
+  id-token: write
+  attestations: write
+
+# Per-tag, not global. sync-github.yaml force-pushes every tag on every run,
+# and a change to its redaction rules moves every SHA at once -- which GitHub
+# sees as N updated tags and fires N release runs. Grouping per tag keeps each
+# one serialized against a re-run of itself without having them cancel each
+# other. The idempotent release creation below is the other half of that.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    env:
+      NFPM_VERSION: "2.47.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Derive version from tag
+        id: version
+        run: |
+          # refs/tags/v1.2.3 -> 1.2.3
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building version $VERSION"
+
+      # SOURCE_DATE_EPOCH is the commit date of the tagged commit, so nfpm
+      # stamps the .deb deterministically instead of using "now". Without it
+      # two builds of the same tag differ in their ar member timestamps and in
+      # the mtimes inside data.tar, and nobody can reproduce a published .deb.
+      #
+      # This still does not make builds byte-identical across different Go
+      # patch releases -- Go stamps vcs.revision/vcs.time into main packages
+      # and -trimpath does not strip them -- so compare packaging metadata,
+      # not hashes.
+      - name: Derive SOURCE_DATE_EPOCH from the tagged commit
+        run: |
+          EPOCH="$(git log -1 --pretty=%ct)"
+          echo "SOURCE_DATE_EPOCH=$EPOCH" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$EPOCH ($(date -u -d "@$EPOCH" +%FT%TZ))"
+
+      # Static by construction: godbus is pure Go, so CGO_ENABLED=0 yields a
+      # binary with no glibc coupling. That is what makes the single-artifact
+      # distribution real rather than aspirational.
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+              go build -trimpath \
+                -ldflags "-s -w -X main.version=${{ steps.version.outputs.version }}" \
+                -o "dist/retrosaver-linux-$arch" ./cmd/retrosaver
+          done
+          file dist/* || true
+
+          # nfpm does not compress man pages, and Debian wants them gzipped.
+          # -n omits the timestamp so the result is reproducible.
+          gzip -9 -n -c docs/retrosaver.1 > dist/retrosaver.1.gz
+
+      - name: Install nfpm
+        run: |
+          curl -sSL \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin nfpm
+          nfpm --version
+
+      # nfpm does NOT expand environment variables inside contents[].src, so the
+      # binary is staged at the fixed path nfpm.yaml names. Verified against
+      # nfpm v2.47.0: a ${GOARCH} in src fails with "Glob failed".
+      - name: Build .deb packages
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          for arch in amd64 arm64; do
+            cp "dist/retrosaver-linux-$arch" dist/retrosaver
+            GOARCH="$arch" nfpm pkg --packager deb --target dist/
+          done
+          rm -f dist/retrosaver
+          ls -la dist/
+
+      - name: Verify package metadata
+        run: |
+          for deb in dist/*.deb; do
+            echo "=== $deb"
+            dpkg-deb --info "$deb" | grep -E 'Depends|Conflicts|Architecture|Version|Homepage'
+            dpkg-deb --contents "$deb"
+          done
+
+      # Provenance for the four published files. Cheap, and it lets anyone
+      # verify a downloaded .deb came from this repo and this workflow:
+      #   gh attestation verify retrosaver_X.Y.Z_amd64.deb -R c-premus/retrosaver
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: "dist/*.deb, dist/retrosaver-linux-*"
+
+      # Idempotent by construction. A run can legitimately be the second for one
+      # tag: a workflow_dispatch re-run after a partial failure, or a tag that
+      # sync-github.yaml force-updated. Creating a release that already exists
+      # is an error, so reuse it; --clobber replaces an asset rather than
+      # failing or attaching a second copy under the same name.
+      - name: Create release and attach assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -o errexit -o nounset -o pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists; reusing it."
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes "Install: download the .deb for your architecture, then \`sudo apt install ./retrosaver_${VERSION}_amd64.deb\` and run \`retrosaver setup\`."
+            echo "Created release ${TAG}"
+          fi
+
+          gh release upload "$TAG" --clobber \
+            dist/*.deb dist/retrosaver-linux-amd64 dist/retrosaver-linux-arm64
+
+          # Assert the finished state rather than trusting the exit codes above.
+          # A green run that published nothing is the failure mode worth
+          # spending four lines to rule out.
+          count="$(gh release view "$TAG" --json assets --jq '.assets | length')"
+          echo "Release ${TAG} has ${count} assets."
+          if [ "$count" -ne 4 ]; then
+            echo "::error::expected 4 assets, found ${count}"
+            exit 1
+          fi
