@@ -12,7 +12,7 @@ go 1.24
 
 // What CI and the devcontainer actually build with. Bump this freely; bump the
 // line above only when the code starts using a newer language feature.
-toolchain go1.26.7
+toolchain go1.27.1
 
 require github.com/godbus/dbus/v5 v5.2.2
 
