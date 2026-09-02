@@ -23,9 +23,10 @@ Issues and pull requests are both welcome regardless.
 
 ## Before you open a pull request
 
-The full contributor guide — architecture, code standards, and a long list of hard-won
-gotchas that will save you real time — is in [AGENTS.md](AGENTS.md). It is worth reading
-before touching `internal/`.
+The full development guide — architecture, code standards, and a long list of hard-won
+gotchas that will save you real time — is in
+[docs/development.md](docs/development.md). It is worth reading before touching
+`internal/`.
 
 Run what CI runs:
 
@@ -64,7 +65,7 @@ screen.
 ## Things that will be declined
 
 These are design boundaries, not preferences. Each is explained at length in
-[AGENTS.md](AGENTS.md) and [README.md](README.md):
+[docs/development.md](docs/development.md) and [README.md](README.md):
 
 - **Making this a screen locker.** X11 grabs do not work under XWayland, so it cannot be
   done securely. Stage 2 hands off to GNOME's own lock screen, and that is the security

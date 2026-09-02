@@ -14,8 +14,7 @@ XScreenSaver.
 > **Status: implemented and verified on the reference host.** All the pieces are written
 > and unit-tested, and **all six steps** of the `docs/spec.md` §8 procedure pass against a
 > live GNOME 50.1 session — idle detection, session control, the fullscreen wrapper, the
-> full saver → lock → blank → teardown sequence, and reboot persistence. See
-> `memory-bank/progress.md`.
+> full saver → lock → blank → teardown sequence, and reboot persistence.
 
 ## Why this exists
 
@@ -174,8 +173,9 @@ Mitigations, all implemented:
 
 ## Development
 
-Start with [`CONTRIBUTING.md`](CONTRIBUTING.md). See [`AGENTS.md`](AGENTS.md) for the full
-development guide, and [`.devcontainer/README.md`](.devcontainer/README.md) for the
+Start with [`CONTRIBUTING.md`](CONTRIBUTING.md). See
+[`docs/development.md`](docs/development.md) for the full development guide, and
+[`.devcontainer/README.md`](.devcontainer/README.md) for the
 container's scope — notably that it **cannot** run or integration-test the daemon, since
 there is no Mutter, session bus, XWayland or `systemd --user` inside a container.
 

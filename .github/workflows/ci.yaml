@@ -41,8 +41,8 @@ jobs:
             exit 1
           fi
 
-      # The dependency rule in AGENTS.md is "exactly two direct dependencies,
-      # both pure Go". This is the only thing that enforces it mechanically:
+      # The dependency rule in docs/development.md is "exactly two direct
+      # dependencies, both pure Go". This is the only thing enforcing it:
       # -diff fails without writing, so an untidy or newly-grown go.mod cannot
       # merge unnoticed.
       - name: go mod tidy (GATE)

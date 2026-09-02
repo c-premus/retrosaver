@@ -11,7 +11,7 @@
 // inotify syscalls in golang.org/x/sys/unix.
 //
 // That import makes x/sys a direct dependency, which is deliberate and
-// recorded in AGENTS.md: the project's rule is two pure-Go dependencies, not
+// recorded in docs/development.md: the project's rule is two pure-Go dependencies, not
 // one. The stdlib syscall package is frozen and its own documentation points
 // callers at x/sys, so hand-rolling these calls to avoid the requirement would
 // trade an endorsed dependency for a discouraged one. x/sys is pure Go, so

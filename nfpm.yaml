@@ -1,4 +1,4 @@
-# nfpm packaging manifest. Built in CI by .forgejo/workflows/release.yaml:
+# nfpm packaging manifest. Built by the release workflow in CI:
 #   cp dist/retrosaver-linux-amd64 dist/retrosaver
 #   VERSION=1.2.3 GOARCH=amd64 nfpm pkg --packager deb --target dist/
 #
