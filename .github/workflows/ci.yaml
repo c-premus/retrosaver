@@ -75,7 +75,7 @@ jobs:
       # Not gosec: it fires G204 on every exec.Command taking a module path,
       # and those paths come from a directory intersection, not user input.
       - name: staticcheck (GATE)
-        run: go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
+        run: go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
 
       # Catches vulnerabilities reachable from this module's own code, including
       # the Go standard library compiled into the shipped binary. Automated
