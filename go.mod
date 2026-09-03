@@ -19,4 +19,4 @@ require github.com/godbus/dbus/v5 v5.2.2
 // golang.org/x/sys is a direct dependency, imported by internal/watch for the
 // inotify syscalls. See docs/development.md: the rule is two pure-Go dependencies, not
 // one, because the stdlib syscall package is frozen and points callers here.
-require golang.org/x/sys v0.44.0
+require golang.org/x/sys v0.47.0
