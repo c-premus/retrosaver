@@ -36,6 +36,11 @@ type fakeMonitor struct {
 	closed  bool
 	addErr  error
 
+	// idletime is what Idletime reports, modelling a session that was already
+	// idle when the daemon armed. idletimeErr models the D-Bus read failing.
+	idletime    time.Duration
+	idletimeErr error
+
 	// activeErr makes AddUserActiveWatch fail, which is a different path from
 	// addErr: the user-active watch is armed per stage, not by arm().
 	activeErr error
@@ -43,6 +48,21 @@ type fakeMonitor struct {
 
 func newFakeMonitor() *fakeMonitor {
 	return &fakeMonitor{fired: make(chan idle.WatchID, 8)}
+}
+
+// Idletime reports how long the session has been idle. Zero unless a test
+// sets it, which keeps every existing test on the "session just went idle"
+// path where no swap threshold has been missed.
+func (f *fakeMonitor) Idletime() (time.Duration, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.idletime, f.idletimeErr
+}
+
+func (f *fakeMonitor) setIdletime(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.idletime = d
 }
 
 func (f *fakeMonitor) AddIdleWatch(d time.Duration) (idle.WatchID, error) {
@@ -1568,4 +1588,61 @@ func TestReloadOfCycleAfterIsNotSwallowed(t *testing.T) {
 	cfg := cyclingConfig()
 	cfg.CycleAfter = 200 * time.Second
 	h.reload(cfg, "reload:ok") // "reload:unchanged" means sameConfig missed it
+}
+
+// The bug a real session found and the fakes could not: an overdue idle watch
+// fires as soon as it is added, so a daemon arming against an already-idle
+// session used to walk the whole swap series back-to-back, launching a module
+// per missed interval. Observed as six modules in about a second.
+func TestCycleSkipsThresholdsAlreadyIdledThrough(t *testing.T) {
+	cfg := cyclingConfig() // saver 300, cycle 100, lock at 1200
+	h := start(t, cfg, func(h *harness) {
+		h.lau.names = []string{"atlantis", "flame", "ifs"}
+		h.lau.honourAvoid = true
+		// Idle for 640s already: swaps at 400, 500 and 600 have all gone by.
+		h.mon.setIdletime(640 * time.Second)
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	// One cycle watch, at the next threshold past 640 -- not one per missed
+	// interval, and not 400.
+	want := []time.Duration{300, 1200, 1320, 700}
+	if got := h.mon.intervals(); !slices.Equal(got, scale(want)) {
+		t.Errorf("idle watch thresholds = %v, want %v", got, scale(want))
+	}
+	if got := len(h.lau.askedFor()); got != 1 {
+		t.Errorf("Launch called %d times on a cold start, want exactly 1", got)
+	}
+}
+
+// The same skip must not arm anything once the lock threshold has gone by too.
+func TestNoCycleWatchWhenIdlePastTheLockThreshold(t *testing.T) {
+	h := start(t, cyclingConfig(), func(h *harness) {
+		h.mon.setIdletime(5000 * time.Second) // far past the lock at 1200
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	want := []time.Duration{300, 1200, 1320}
+	if got := h.mon.intervals(); !slices.Equal(got, scale(want)) {
+		t.Errorf("idle watch thresholds = %v, want %v (no cycle watch)", got, scale(want))
+	}
+}
+
+// A failed Idletime read must cost the skip, not the feature.
+func TestCycleStillArmsWhenIdletimeReadFails(t *testing.T) {
+	h := start(t, cyclingConfig(), func(h *harness) {
+		h.mon.idletimeErr = errors.New("dbus: no reply")
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	want := []time.Duration{300, 1200, 1320, 400}
+	if got := h.mon.intervals(); !slices.Equal(got, scale(want)) {
+		t.Errorf("idle watch thresholds = %v, want %v (fallback to counting)", got, scale(want))
+	}
 }

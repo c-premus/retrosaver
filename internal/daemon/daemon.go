@@ -38,6 +38,9 @@ const blankIdleDelay = 10
 // structurally and know nothing about these declarations.
 type (
 	idleMonitor interface {
+		// Idletime is how long the session has already been idle. It is what
+		// lets armCycle skip swap thresholds that have already gone by.
+		Idletime() (time.Duration, error)
 		AddIdleWatch(d time.Duration) (idle.WatchID, error)
 		AddUserActiveWatch() (idle.WatchID, error)
 		RemoveWatch(id idle.WatchID) error
@@ -481,7 +484,29 @@ func (m *machine) armCycle() {
 	if !cfg.CycleEnabled() {
 		return
 	}
-	at := cfg.SaverDelay + time.Duration(m.cycles+1)*cfg.CycleAfter
+	n := int64(m.cycles) + 1
+
+	// Skip the swaps whose moment has already passed. An overdue idle watch
+	// fires as soon as it is added, so arming the next multiple blindly makes
+	// a daemon that starts against an already-idle session walk the entire
+	// series back-to-back, launching a module per missed interval as fast as
+	// the launcher will go. Seen on a real session: six modules in about a
+	// second after a restart. With LOCK_AFTER=0 nothing bounds it at all.
+	//
+	// This is the one place the daemon reads the clock, and it is still the
+	// idle monitor's clock, not a timer of its own.
+	if idle, err := m.mon.Idletime(); err != nil {
+		// Fall back to counting swaps. Worse on an already-idle start, but a
+		// failed D-Bus read must not cost the feature outright.
+		m.d.log.Debug("reading idle time to schedule the next swap", "err", err)
+	} else if k := int64(idle-cfg.SaverDelay)/int64(cfg.CycleAfter) + 1; k > n {
+		m.d.log.Debug("skipping swap thresholds already idled through",
+			"idle", idle, "from", n, "to", k)
+		n = k
+		m.cycles = int(k) - 1
+	}
+
+	at := cfg.SaverDelay + time.Duration(n)*cfg.CycleAfter
 	if cfg.LockEnabled() && at >= cfg.SaverDelay+cfg.LockAfter {
 		// The lock stage stops the module anyway, so a swap at or past that
 		// point would either be invisible or flash a fresh window up behind
