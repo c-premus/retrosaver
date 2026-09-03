@@ -6,6 +6,11 @@
 //	saver   SAVER_DELAY                             launch a random module
 //	lock    SAVER_DELAY + LOCK_AFTER                stop the module, lock the session
 //	blank   SAVER_DELAY + LOCK_AFTER + BLANK_AFTER  power the display off
+//
+// Within the saver stage the module is swapped for another one every
+// CYCLE_AFTER, so a long idle period is not fifteen minutes of the same
+// screensaver. A swap is not a stage: it does not advance the state machine,
+// and it stops at the lock threshold.
 package daemon
 
 import (
@@ -131,6 +136,9 @@ func New(cfg config.Config) *Daemon {
 func (d *Daemon) logArmed(msg string) {
 	d.log.Info(msg,
 		"saver", d.cfg.SaverDelay,
+		// An interval, not a cumulative threshold like the others: it is how
+		// long each module lasts, repeating until the lock stage.
+		"cycle", stageDesc(d.cfg.CycleEnabled(), d.cfg.CycleAfter),
 		"lock", stageDesc(d.cfg.LockEnabled(), d.cfg.SaverDelay+d.cfg.LockAfter),
 		"blank", stageDesc(d.cfg.BlankEnabled(), d.cfg.SaverDelay+d.cfg.LockAfter+d.cfg.BlankAfter))
 }
@@ -271,6 +279,7 @@ type watchKind int
 
 const (
 	kindSaver watchKind = iota
+	kindCycle
 	kindLock
 	kindBlank
 	kindActive
@@ -280,6 +289,8 @@ func (k watchKind) String() string {
 	switch k {
 	case kindSaver:
 		return "saver"
+	case kindCycle:
+		return "cycle"
 	case kindLock:
 		return "lock"
 	case kindBlank:
@@ -318,9 +329,18 @@ type machine struct {
 	launched chan launchResult
 
 	current     saver
-	tried       []string
+	currentName string
 	blanked     bool
 	activeArmed bool
+
+	// used names every module shown so far this idle cycle, and is the avoid
+	// list handed to Pick. attempts counts launches for the swap in progress,
+	// and is what caps the retry: the two were one field until cycling made
+	// the pool outgrow 2 and silently disable retrying. cycles counts the
+	// swaps done, and is how the next cycle watch's threshold is worked out.
+	used     []string
+	attempts int
+	cycles   int
 
 	// fatal records a failure that leaves the daemon unable to do its job at
 	// all -- in practice, one that leaves it with no watches. Handlers are
@@ -416,6 +436,9 @@ func (m *machine) handleWatch(id idle.WatchID) {
 	case kindSaver:
 		m.onSaver()
 		m.d.trace("watch:saver")
+	case kindCycle:
+		m.onCycle(id)
+		m.d.trace("watch:cycle")
 	case kindLock:
 		m.onLock()
 		m.d.trace("watch:lock")
@@ -436,7 +459,62 @@ func (m *machine) onSaver() {
 	// Every stage arms it, not just the saver: on a cold start past the lock
 	// threshold the lock watch can fire without onSaver ever running.
 	m.ensureActiveWatch()
+	m.armCycle()
 	m.d.log.Info("idle: starting the screensaver")
+	m.startLaunch()
+}
+
+// armCycle registers the watch for the next module swap, when one is due
+// before the lock stage.
+//
+// Each fire arms its successor rather than the whole series being registered
+// up front, which is what lets an unbounded run -- LOCK_AFTER=0, a session
+// left idle overnight -- hold exactly one cycle watch at a time. The deadline
+// is an absolute idle time, like every other stage, so the daemon still owns
+// no timers.
+//
+// It is armed from onSaver rather than from arm() deliberately: a swap only
+// means anything once a module is actually on screen, and on a cold start past
+// the lock threshold onSaver never runs, so there is nothing to cycle.
+func (m *machine) armCycle() {
+	cfg := m.d.cfg
+	if !cfg.CycleEnabled() {
+		return
+	}
+	at := cfg.SaverDelay + time.Duration(m.cycles+1)*cfg.CycleAfter
+	if cfg.LockEnabled() && at >= cfg.SaverDelay+cfg.LockAfter {
+		// The lock stage stops the module anyway, so a swap at or past that
+		// point would either be invisible or flash a fresh window up behind
+		// the lock screen.
+		return
+	}
+	if err := m.addIdle(at, kindCycle); err != nil {
+		// Losing a swap is cosmetic: the module already running stays, and
+		// the lock and blank stages are untouched. Not worth m.fatal.
+		m.d.log.Error("arming the cycle watch", "err", err, "at", at)
+	}
+}
+
+// onCycle swaps the running module for another one.
+func (m *machine) onCycle(id idle.WatchID) {
+	// Drop the watch that fired before arming its successor. With LOCK_AFTER=0
+	// the saver runs for as long as the session stays idle, so a map that only
+	// ever grew would gain an entry every CYCLE_AFTER, all night. RemoveWatch
+	// tolerates an ID Mutter has already retired, which is what makes this
+	// safe without knowing whether a fired watch auto-removes.
+	if err := m.mon.RemoveWatch(id); err != nil {
+		m.d.log.Debug("removing the fired cycle watch", "id", id, "err", err)
+	}
+	delete(m.watches, id)
+
+	if m.stage != stageSaver {
+		// Locked, blanked, or never started. Nothing to swap.
+		return
+	}
+	m.cycles++
+	m.attempts = 0
+	m.armCycle()
+	m.d.log.Info("idle: cycling to another module")
 	m.startLaunch()
 }
 
@@ -533,6 +611,7 @@ func sameConfig(a, b config.Config) bool {
 	return a.SaverDelay == b.SaverDelay &&
 		a.LockAfter == b.LockAfter &&
 		a.BlankAfter == b.BlankAfter &&
+		a.CycleAfter == b.CycleAfter &&
 		slices.Equal(a.Include, b.Include) &&
 		slices.Equal(a.Exclude, b.Exclude)
 }
@@ -573,7 +652,41 @@ func (m *machine) reset() {
 		}
 	}
 	m.stage = stageIdle
-	m.tried = nil
+	m.used = nil
+	m.attempts = 0
+	m.cycles = 0
+}
+
+// pick chooses a module that has not been shown yet this idle cycle.
+//
+// Pick reports an exhausted pool and a genuinely empty selection identically
+// -- both come back as "none survived INCLUDE/EXCLUDE", because an avoid list
+// that swallows everything is indistinguishable from a config that does. So
+// the retry is what tells them apart: if anything has been shown, emptying the
+// pool and asking again must succeed unless there really is nothing there.
+func (m *machine) pick() (string, error) {
+	name, err := m.d.modules.Pick(m.used...)
+	if err == nil {
+		return name, nil
+	}
+	if len(m.used) == 0 {
+		return "", err
+	}
+
+	// Every selectable module has been shown. Start the pool over, holding
+	// back only what is on screen so the next one still differs from it.
+	m.used = m.used[:0]
+	if m.currentName != "" {
+		m.used = append(m.used, m.currentName)
+	}
+	if name, err := m.d.modules.Pick(m.used...); err == nil {
+		return name, nil
+	}
+
+	// One selectable module, and it is already running. Hand it back and let
+	// startLaunch recognise it and skip the swap.
+	m.used = m.used[:0]
+	return m.d.modules.Pick()
 }
 
 // startLaunch picks a module and launches it on a worker goroutine.
@@ -583,16 +696,26 @@ func (m *machine) reset() {
 // module flashing onto the screen of someone who is already back at the
 // keyboard. The generation counter makes a late result harmless.
 func (m *machine) startLaunch() {
-	name, err := m.d.modules.Pick(m.tried...)
+	name, err := m.pick()
 	if err != nil {
 		// No module could be chosen. Do not abandon the cycle: idle-delay is
 		// 0, so returning here would leave the session with no auto-lock at
 		// all. The lock and blank stages must still run.
-		m.d.log.Error("no module available to launch", "err", err, "tried", m.tried)
+		m.d.log.Error("no module available to launch", "err", err, "used", m.used)
 		m.d.trace("launch:unavailable")
 		return
 	}
-	m.tried = append(m.tried, name)
+	if m.current != nil && name == m.currentName {
+		// Swapping a module for itself would tear down a perfectly good
+		// window and put an identical one back, with a gap in between. When
+		// only one module is selectable that is every single cycle, so this
+		// has to be a no-op rather than a flicker every CYCLE_AFTER.
+		m.d.log.Debug("cycle: nothing else to switch to, keeping the module", "module", name)
+		m.d.trace("cycle:skipped")
+		return
+	}
+	m.used = append(m.used, name)
+	m.attempts++
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
@@ -640,14 +763,25 @@ func (m *machine) handleLaunch(r launchResult) {
 		// Retry only when the module itself is at fault. A launch the daemon
 		// cancelled reports context.Canceled, and spending the single retry on
 		// that leaves a genuinely broken module untried.
-		if retryable(r.err) && len(m.tried) < 2 {
+		if retryable(r.err) && m.attempts < 2 {
 			m.startLaunch() // retry once, with a module Pick has not tried
 		}
 		m.d.trace("launch:failed:" + r.name)
 		return
 	}
 
+	// The outgoing module is stopped here, once its replacement is actually on
+	// screen, and not when the cycle watch fired. Window discovery blocks for
+	// up to five seconds, so stopping first would leave the desktop bare for
+	// that long every swap -- and leave it bare until the next stage if the
+	// replacement turned out not to start at all.
+	if m.current != nil {
+		if err := m.current.Stop(); err != nil {
+			m.d.log.Error("stopping the outgoing module", "err", err)
+		}
+	}
 	m.current = r.saver
+	m.currentName = r.name
 	m.d.log.Info("screensaver running", "module", r.name)
 	m.d.trace("launch:ok:" + r.name)
 }
@@ -675,6 +809,7 @@ func (m *machine) stopSaver() {
 		}
 		m.current = nil
 	}
+	m.currentName = ""
 }
 
 // shutdown is the single teardown path, run from Run's defer. It is safe

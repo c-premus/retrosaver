@@ -27,6 +27,10 @@ type Config struct {
 	// BlankAfter is the time after locking before the display powers off.
 	// Zero disables blanking.
 	BlankAfter time.Duration
+	// CycleAfter is how long each module stays on screen before the saver
+	// swaps to another one. Zero disables cycling, leaving the module that
+	// started the saver stage up until the lock stage or user activity.
+	CycleAfter time.Duration
 	// Exclude lists module names never to pick.
 	Exclude []string
 	// Include, when non-empty, restricts selection to these modules.
@@ -39,6 +43,7 @@ func Defaults() Config {
 		SaverDelay: 300 * time.Second,
 		LockAfter:  900 * time.Second,
 		BlankAfter: 120 * time.Second,
+		CycleAfter: 300 * time.Second,
 		Exclude: []string{
 			"webcollage", "vidwhacker", "glslideshow",
 			"photopile", "carousel", "sonar",
@@ -53,6 +58,9 @@ func (c Config) LockEnabled() bool { return c.LockAfter > 0 }
 // BlankEnabled reports whether the blank stage is active. Blanking is
 // meaningless without locking, so it is gated on both.
 func (c Config) BlankEnabled() bool { return c.LockAfter > 0 && c.BlankAfter > 0 }
+
+// CycleEnabled reports whether the saver swaps modules while it runs.
+func (c Config) CycleEnabled() bool { return c.CycleAfter > 0 }
 
 // UserConfigPath returns ~/.config/retrosaver/retrosaver.conf, honouring
 // XDG_CONFIG_HOME.
@@ -128,6 +136,12 @@ func parse(r io.Reader, cfg *Config) error {
 				return fmt.Errorf("line %d: BLANK_AFTER: %w", line, err)
 			}
 			cfg.BlankAfter = d
+		case "CYCLE_AFTER":
+			d, err := seconds(value)
+			if err != nil {
+				return fmt.Errorf("line %d: CYCLE_AFTER: %w", line, err)
+			}
+			cfg.CycleAfter = d
 		case "EXCLUDE":
 			cfg.Exclude = strings.Fields(value)
 		case "INCLUDE":

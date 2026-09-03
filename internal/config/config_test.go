@@ -26,6 +26,7 @@ func TestParseOverridesAndQuoting(t *testing.T) {
 # a comment
 SAVER_DELAY=15
 
+CYCLE_AFTER=7
 LOCK_AFTER=20
 BLANK_AFTER=10
 EXCLUDE="webcollage sonar"
@@ -37,6 +38,9 @@ INCLUDE='atlantis flame ifs'
 	}
 	if cfg.SaverDelay != 15*time.Second {
 		t.Errorf("SaverDelay = %v, want 15s", cfg.SaverDelay)
+	}
+	if cfg.CycleAfter != 7*time.Second {
+		t.Errorf("CycleAfter = %v, want 7s", cfg.CycleAfter)
 	}
 	if cfg.BlankAfter != 10*time.Second {
 		t.Errorf("BlankAfter = %v, want 10s", cfg.BlankAfter)
@@ -67,6 +71,19 @@ func TestParseDoesNotEvaluateShell(t *testing.T) {
 	}
 	if _, err := os.Stat(canary); err == nil {
 		t.Fatal("parser executed the config file")
+	}
+}
+
+func TestZeroDisablesCycling(t *testing.T) {
+	cfg := Defaults()
+	if !cfg.CycleEnabled() {
+		t.Fatal("CycleEnabled = false with the shipped defaults, want true")
+	}
+	if err := parse(strings.NewReader("CYCLE_AFTER=0\n"), &cfg); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cfg.CycleEnabled() {
+		t.Error("CycleEnabled = true after CYCLE_AFTER=0, want false")
 	}
 }
 

@@ -142,10 +142,17 @@ type fakeLauncher struct {
 	// exists for. Without it the fake simply returns ctx.Err() and there is
 	// nothing to discard.
 	ignoreCancel bool
-	asked        []string
-	avoided      [][]string
-	savers       []*fakeSaver
-	pickErr      error
+	// honourAvoid makes Pick behave like realLauncher: it returns the first
+	// name not in the avoid list and errors when every name is avoided. The
+	// default is index-based and ignores avoid entirely, which is what most
+	// tests want; the cycling tests need real exhaustion semantics, because
+	// telling exhaustion apart from an empty selection is the interesting
+	// part of machine.pick.
+	honourAvoid bool
+	asked       []string
+	avoided     [][]string
+	savers      []*fakeSaver
+	pickErr     error
 	// filters records SetFilters calls, so a reload test can prove the
 	// launcher was actually re-pointed rather than left on its stale copy.
 	filters [][2][]string
@@ -199,6 +206,16 @@ func (l *fakeLauncher) Pick(avoid ...string) (string, error) {
 		return "", l.pickErr
 	}
 	l.avoided = append(l.avoided, slices.Clone(avoid))
+	if l.honourAvoid {
+		for _, n := range l.names {
+			if !slices.Contains(avoid, n) {
+				return n, nil
+			}
+		}
+		// The wording modules.Available uses, so a test reads like the real
+		// failure the daemon has to disambiguate.
+		return "", errors.New("no modules available: none survived INCLUDE/EXCLUDE")
+	}
 	i := min(len(l.avoided)-1, len(l.names)-1)
 	return l.names[i], nil
 }
@@ -325,12 +342,35 @@ type harness struct {
 	runErr   error
 }
 
+// defaultConfig deliberately leaves CycleAfter zero, so every test that does
+// not care about cycling exercises the single-module-per-idle-period path and
+// keeps the watch ids below stable. It is therefore NOT a mirror of
+// config.Defaults(), which does enable cycling.
 func defaultConfig() config.Config {
 	return config.Config{
 		SaverDelay: 300 * time.Second,
 		LockAfter:  900 * time.Second,
 		BlankAfter: 120 * time.Second,
 	}
+}
+
+// scale turns a list of plain second counts into durations, so a table of
+// expected thresholds reads as 300/1200/1320 rather than as six repetitions
+// of time.Second.
+func scale(secs []time.Duration) []time.Duration {
+	out := make([]time.Duration, len(secs))
+	for i, s := range secs {
+		out[i] = s * time.Second
+	}
+	return out
+}
+
+// cyclingConfig turns cycling on, at an interval that fits several swaps in
+// before the lock threshold at 1200s: watches land at 400, 500, 600 ...
+func cyclingConfig() config.Config {
+	cfg := defaultConfig()
+	cfg.CycleAfter = 100 * time.Second
+	return cfg
 }
 
 func start(t *testing.T, cfg config.Config, tweak ...func(*harness)) *harness {
@@ -466,6 +506,12 @@ const (
 	// A re-arm registers the next three idle watches.
 	wSaver2 idle.WatchID = 5
 	wLock2  idle.WatchID = 6
+
+	// With cycling on, onSaver arms the user-active watch and then the first
+	// cycle watch, so the cycle ids follow the user-active one. Each fire
+	// retires its watch and arms the next, hence a fresh id every time.
+	wCycle  idle.WatchID = 5
+	wCycle2 idle.WatchID = 6
 )
 
 // ---------------------------------------------------------------- tests
@@ -1309,4 +1355,217 @@ func TestRealLauncherPickDoesNotWriteThroughExclude(t *testing.T) {
 				got, i+1)
 		}
 	}
+}
+
+// ---------------------------------------------------------------- cycling
+
+func TestCycleSwapsToAnotherModule(t *testing.T) {
+	h := start(t, cyclingConfig(), func(h *harness) {
+		h.lau.names = []string{"atlantis", "flame"}
+		h.lau.honourAvoid = true
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	h.fire(wCycle, "watch:cycle")
+	h.want("launch:ok:flame")
+
+	if got, want := h.lau.askedFor(), []string{"atlantis", "flame"}; !slices.Equal(got, want) {
+		t.Errorf("modules launched = %v, want %v", got, want)
+	}
+	// The swap must tell Pick what has already been shown, or it can pick the
+	// module that is already on screen.
+	if got := h.lau.avoidedOn(1); !slices.Contains(got, "atlantis") {
+		t.Errorf("the swap avoided %v, want it to exclude atlantis", got)
+	}
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 1 {
+		t.Errorf("outgoing module stopped %d times, want 1", got)
+	}
+}
+
+// The outgoing module must survive until its replacement is actually on
+// screen. Window discovery blocks for up to five seconds, so stopping it when
+// the cycle watch fired would leave the desktop bare for that long.
+func TestCycleStopsTheOldModuleOnlyOnceTheNewOneIsUp(t *testing.T) {
+	release := make(chan struct{})
+	h := start(t, cyclingConfig(), func(h *harness) {
+		h.lau.names = []string{"atlantis", "flame"}
+		h.lau.honourAvoid = true
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	// Hold the replacement's launch open, the way real window discovery does.
+	h.lau.mu.Lock()
+	h.lau.release = release
+	h.lau.mu.Unlock()
+
+	h.fire(wCycle, "watch:cycle")
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 0 {
+		t.Fatalf("outgoing module stopped %d times mid-launch, want 0", got)
+	}
+
+	close(release)
+	h.want("launch:ok:flame")
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 1 {
+		t.Errorf("outgoing module stopped %d times after the swap landed, want 1", got)
+	}
+}
+
+func TestCycleWatchesArmOneAtATime(t *testing.T) {
+	h := start(t, cyclingConfig(), func(h *harness) {
+		h.lau.names = []string{"atlantis", "flame", "ifs"}
+		h.lau.honourAvoid = true
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	// arm() registered 300/1200/1320; onSaver added the first swap at 400.
+	want := []time.Duration{300, 1200, 1320, 400}
+	if got := h.mon.intervals(); !slices.Equal(got, scale(want)) {
+		t.Errorf("idle watch thresholds = %v, want %v", got, scale(want))
+	}
+
+	h.fire(wCycle, "watch:cycle")
+	h.want("launch:ok:flame")
+
+	want = append(want, 500)
+	if got := h.mon.intervals(); !slices.Equal(got, scale(want)) {
+		t.Errorf("after one swap, thresholds = %v, want %v", got, scale(want))
+	}
+	// The watch that fired must be retired, or a night of swaps leaks one
+	// map entry per CYCLE_AFTER.
+	if got := h.mon.removedWatches(); !slices.Contains(got, wCycle) {
+		t.Errorf("removed watches = %v, want the fired cycle watch %d among them", got, wCycle)
+	}
+}
+
+// A swap at or past the lock threshold would either be invisible or flash a
+// fresh window up behind the lock screen.
+func TestNoCycleWatchAtOrPastTheLockThreshold(t *testing.T) {
+	cfg := cyclingConfig()
+	cfg.CycleAfter = 900 * time.Second // 300 + 900 == the lock threshold
+	h := start(t, cfg)
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	want := []time.Duration{300, 1200, 1320}
+	if got := h.mon.intervals(); !slices.Equal(got, scale(want)) {
+		t.Errorf("idle watch thresholds = %v, want %v (no cycle watch)", got, scale(want))
+	}
+}
+
+func TestCycleAfterZeroArmsNoCycleWatch(t *testing.T) {
+	h := start(t, defaultConfig()) // CycleAfter is zero there
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	want := []time.Duration{300, 1200, 1320}
+	if got := h.mon.intervals(); !slices.Equal(got, scale(want)) {
+		t.Errorf("idle watch thresholds = %v, want %v (cycling disabled)", got, scale(want))
+	}
+}
+
+// With one selectable module a swap would tear down a perfectly good window
+// and put an identical one back, every CYCLE_AFTER. It has to be a no-op.
+func TestCycleWithOneModuleKeepsItRunning(t *testing.T) {
+	h := start(t, cyclingConfig(), func(h *harness) {
+		h.lau.names = []string{"atlantis"}
+		h.lau.honourAvoid = true
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	// startLaunch traces from inside the cycle handler, so the inner tag
+	// arrives before handleWatch's.
+	h.mon.fired <- wCycle
+	h.want("cycle:skipped")
+	h.want("watch:cycle")
+
+	if got := len(h.lau.askedFor()); got != 1 {
+		t.Errorf("Launch called %d times, want 1: the module must not be restarted", got)
+	}
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 0 {
+		t.Errorf("the running module was stopped %d times, want it left alone", got)
+	}
+}
+
+// Pick reports an exhausted pool and a genuinely empty selection identically,
+// so running out of unseen modules must not read as "no module available".
+func TestCycleStartsTheSetOverWhenEveryModuleHasBeenShown(t *testing.T) {
+	h := start(t, cyclingConfig(), func(h *harness) {
+		h.lau.names = []string{"atlantis", "flame"}
+		h.lau.honourAvoid = true
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+	h.fire(wCycle, "watch:cycle")
+	h.want("launch:ok:flame")
+
+	// Both have now been shown. The set restarts, and the one on screen is
+	// still held back so the swap is a real change.
+	h.fire(wCycle2, "watch:cycle")
+	h.want("launch:ok:atlantis")
+}
+
+// The retry-once cap used to read len(m.tried) < 2, where tried doubled as
+// the no-repeat pool. Once the pool grew past two entries -- the second swap
+// -- that test was permanently false and a broken module was never retried.
+func TestRetriesOnASwapAsWellAsTheFirstLaunch(t *testing.T) {
+	h := start(t, cyclingConfig(), func(h *harness) {
+		h.lau.names = []string{"atlantis", "flame", "ifs"}
+		h.lau.honourAvoid = true
+		h.lau.failures = map[string]error{"flame": errors.New("no GL context")}
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	h.fire(wCycle, "watch:cycle")
+	h.want("launch:failed:flame")
+	h.want("launch:ok:ifs")
+}
+
+func TestFailedSwapKeepsTheRunningModule(t *testing.T) {
+	h := start(t, cyclingConfig(), func(h *harness) {
+		h.lau.names = []string{"atlantis", "flame", "ifs"}
+		h.lau.honourAvoid = true
+		h.lau.failures = map[string]error{
+			"flame": errors.New("boom"),
+			"ifs":   errors.New("boom"),
+		}
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	h.fire(wCycle, "watch:cycle")
+	h.want("launch:failed:flame")
+	h.want("launch:failed:ifs")
+
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 0 {
+		t.Errorf("running module stopped %d times after a failed swap, want it kept", got)
+	}
+	// And the session must still lock on schedule.
+	h.fire(wLock, "watch:lock")
+	if got := h.sess.lockCount(); got != 1 {
+		t.Errorf("Lock called %d times, want 1", got)
+	}
+}
+
+// sameConfig enumerates every field by hand, so a new key that is not added
+// there makes a reload of it a silent no-op.
+func TestReloadOfCycleAfterIsNotSwallowed(t *testing.T) {
+	h := start(t, cyclingConfig())
+
+	cfg := cyclingConfig()
+	cfg.CycleAfter = 200 * time.Second
+	h.reload(cfg, "reload:ok") // "reload:unchanged" means sameConfig missed it
 }

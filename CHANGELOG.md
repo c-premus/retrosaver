@@ -11,6 +11,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Cycle through the allowed modules during a long idle period. The saver now swaps to
+  another module every `CYCLE_AFTER` seconds (default 300), picked at random from those
+  not yet shown this idle period, so a long break is a slideshow rather than a quarter of
+  an hour of the same fractal. Set `CYCLE_AFTER=0` for the previous behaviour. Once every
+  selectable module has been shown the set starts over, and if only one module is
+  selectable nothing switches.
+
 ## [0.1.1] - 2026-09-02
 
 ### Fixed

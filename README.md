@@ -50,7 +50,13 @@ any stage tears everything down and re-arms from zero.
 | 2. Lock | 20 min idle | Kill the module, `loginctl lock-session` |
 | 3. Blank | 22 min idle | Power the display off |
 
-All three delays are configurable, and stages 2 and 3 can be disabled individually.
+While the saver stage runs, the module is swapped for another one every 5 minutes, picked
+at random from those not yet shown this idle period — so a long break is a slideshow
+rather than a quarter of an hour of the same fractal. Once every selectable module has
+been shown the set starts over, and if only one module is selectable nothing switches.
+
+All the delays are configurable, cycling and stages 2 and 3 can each be disabled, and
+changes take effect as soon as you save the file.
 
 ## Install
 
@@ -101,6 +107,7 @@ sudo apt remove retrosaver
 
 ```sh
 SAVER_DELAY=300     # idle seconds before the screensaver starts
+CYCLE_AFTER=300     # seconds each module lasts before switching to another. 0 disables
 LOCK_AFTER=900      # seconds after the saver starts before locking. 0 disables
 BLANK_AFTER=120     # seconds after locking before the display powers off. 0 disables
 

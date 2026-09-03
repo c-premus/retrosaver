@@ -28,11 +28,14 @@ sequence, a second cycle, and reboot persistence from an installed `.deb`.
 ### Architecture
 
 Three stages, all timed from when the session goes idle. Any user activity at any stage
-tears everything down and re-arms from zero.
+tears everything down and re-arms from zero. Cycling is not a fourth stage — it repeats
+within the saver stage without advancing the sequence — but it is timed the same way, off
+the idle monitor.
 
 | Stage | Default | Action |
 |---|---|---|
 | Saver | 5 min idle | Launch a random module fullscreen, always-on-top, pointer hidden |
+| Cycle | every 5 min thereafter | Swap in another module not yet shown this idle period |
 | Lock | 20 min idle | Kill the module, `loginctl lock-session` |
 | Blank | 22 min idle | Power the display off |
 
@@ -44,7 +47,7 @@ internal/idle/       org.gnome.Mutter.IdleMonitor D-Bus client
 internal/window/     wmctrl / xdotool / unclutter wrappers
 internal/session/    loginctl lock-session, gsettings idle-delay
 internal/watch/      inotify watch on the config file, for live reload
-internal/daemon/     the four-watch state machine
+internal/daemon/     the state machine: five watch kinds, the cycle one self-re-arming
 ```
 
 The behavioural contract is described here and in `README.md`; the manual verification
@@ -221,6 +224,31 @@ needs a matching rule**, or it silently rots.
   module ships `/usr/share/xscreensaver/config/<name>.xml`; helper binaries do not.
   Intersect those basenames with the executables in `/usr/libexec/xscreensaver/`. A
   hardcoded inventory rots at the next package update.
+- **Cycling reuses the idle monitor, so the daemon still owns no timers.** A module swap
+  is driven by a `kindCycle` idle watch at `SAVER_DELAY + n*CYCLE_AFTER`, and each fire
+  arms the next rather than the whole series being registered up front — which is what
+  lets `LOCK_AFTER=0` run all night holding one cycle watch at a time. `onCycle` must
+  `RemoveWatch` **and** `delete` the watch that fired before arming its successor, or the
+  `watches` map gains an entry every `CYCLE_AFTER` forever.
+- **`armCycle` is called from `onSaver`, not from `arm()`.** A swap only means anything
+  once a module is on screen, and on a cold start past the lock threshold `onSaver` never
+  runs. The side benefit is that the initial arming order is untouched, so the fixed watch
+  IDs the daemon tests rely on (`wSaver=1, wLock=2, wBlank=3, wActive=4`) still hold.
+- **`used` and `attempts` are two fields because they were one, and cycling broke it.**
+  The retry-once cap used to read `len(m.tried) < 2`, where `tried` doubled as the
+  no-repeat pool. Once the pool grows past two entries — which is the second swap — that
+  test is permanently false and a failed module is never retried. `used` is the avoid
+  list for the whole idle period; `attempts` counts launches for the swap in progress and
+  is reset by `onCycle`.
+- **An exhausted pool and an empty selection are the same error.** `Pick` reports "none
+  survived INCLUDE/EXCLUDE" whether the avoid list emptied the set or `INCLUDE` did, so
+  `machine.pick` tells them apart by retrying with the pool cleared. With one selectable
+  module the pick then matches what is already running, and `startLaunch` skips the swap
+  rather than tearing a good window down and putting an identical one back.
+- **The outgoing module is stopped in `handleLaunch`, not when the cycle watch fires.**
+  Window discovery blocks for up to five seconds; stopping first would blank the desktop
+  for that long on every swap, and leave it blank until the next stage whenever the
+  replacement failed to start.
 - **A config reload must re-point the launcher, not just `Daemon.cfg`.** `realLauncher`
   keeps its own copy of `include`/`exclude`, taken in `New`, and `Pick` reads those fields
   rather than `d.cfg`. Updating `d.cfg` alone reloads the timings and silently ignores a

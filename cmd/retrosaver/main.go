@@ -566,6 +566,10 @@ func defaultConfigFile() string {
 	return fmt.Sprintf(`# Seconds of idle before the screensaver starts.
 SAVER_DELAY=%d
 
+# Seconds each module stays on screen before the saver switches to another
+# one. 0 disables switching, leaving the first module up until the lock.
+CYCLE_AFTER=%d
+
 # Seconds after the screensaver starts before the session locks. 0 disables.
 LOCK_AFTER=%d
 
@@ -581,6 +585,7 @@ EXCLUDE="%s"
 INCLUDE="%s"
 `,
 		int(d.SaverDelay.Seconds()),
+		int(d.CycleAfter.Seconds()),
 		int(d.LockAfter.Seconds()),
 		int(d.BlankAfter.Seconds()),
 		strings.Join(d.Exclude, " "),

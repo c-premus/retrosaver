@@ -40,6 +40,9 @@ func TestDefaultConfigFileRoundTripsThroughTheParser(t *testing.T) {
 	if got.BlankAfter != want.BlankAfter {
 		t.Errorf("BlankAfter = %v, want %v", got.BlankAfter, want.BlankAfter)
 	}
+	if got.CycleAfter != want.CycleAfter {
+		t.Errorf("CycleAfter = %v, want %v", got.CycleAfter, want.CycleAfter)
+	}
 	if !slices.Equal(got.Exclude, want.Exclude) {
 		t.Errorf("Exclude = %v, want %v", got.Exclude, want.Exclude)
 	}
@@ -64,10 +67,11 @@ func TestPackagedExampleAgreesWithDefaults(t *testing.T) {
 	want := config.Defaults()
 	if got.SaverDelay != want.SaverDelay ||
 		got.LockAfter != want.LockAfter ||
-		got.BlankAfter != want.BlankAfter {
-		t.Errorf("example delays = %v/%v/%v, defaults = %v/%v/%v",
-			got.SaverDelay, got.LockAfter, got.BlankAfter,
-			want.SaverDelay, want.LockAfter, want.BlankAfter)
+		got.BlankAfter != want.BlankAfter ||
+		got.CycleAfter != want.CycleAfter {
+		t.Errorf("example delays = %v/%v/%v/%v, defaults = %v/%v/%v/%v",
+			got.SaverDelay, got.LockAfter, got.BlankAfter, got.CycleAfter,
+			want.SaverDelay, want.LockAfter, want.BlankAfter, want.CycleAfter)
 	}
 	if !slices.Equal(got.Exclude, want.Exclude) {
 		t.Errorf("example EXCLUDE = %v, defaults = %v", got.Exclude, want.Exclude)

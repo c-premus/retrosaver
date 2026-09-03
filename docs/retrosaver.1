@@ -26,7 +26,10 @@ tears everything down and re\-arms from zero.
 .TP
 .B Saver
 5 minutes idle by default. Launch a random display module fullscreen, always\-on\-top,
-with the pointer hidden.
+with the pointer hidden. Every 5 minutes thereafter the module is replaced by another
+one, chosen at random from those not yet shown this idle period. Switching modules is
+not a stage: it does not advance the sequence, and it stops at the lock threshold. See
+.BR CYCLE_AFTER .
 .TP
 .B Lock
 20 minutes idle by default. Kill the module and hand off to GNOME's own lock screen via
@@ -90,6 +93,14 @@ and is never executed. A commented example is installed at
 .TP
 .B SAVER_DELAY
 Seconds of idle before the screensaver starts. Default 300.
+.TP
+.B CYCLE_AFTER
+Seconds each module stays on screen before the saver switches to another one. Default
+300.
+.B 0
+disables switching, leaving the module that started the saver stage up until the lock.
+Modules already shown this idle period are not repeated; once every selectable module
+has been shown the set starts over. If only one module is selectable, nothing switches.
 .TP
 .B LOCK_AFTER
 Seconds after the screensaver starts before the session locks. Default 900.
