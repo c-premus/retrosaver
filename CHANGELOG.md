@@ -11,6 +11,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-08
+
 ### Fixed
 
 - Do not start the screensaver when the session is already locked. Locking with Super+L is
@@ -143,7 +145,8 @@ First release.
 - GNOME on Wayland only. KDE and wlroots support the Wayland idle protocols, so upstream
   xscreensaver 6.11+ works there natively.
 
-[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/c-premus/retrosaver/releases/tag/v0.2.1
 [0.2.0]: https://github.com/c-premus/retrosaver/releases/tag/v0.2.0
 [0.1.1]: https://github.com/c-premus/retrosaver/releases/tag/v0.1.1
 [0.1.0]: https://github.com/c-premus/retrosaver/releases/tag/v0.1.0
