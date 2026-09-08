@@ -37,10 +37,13 @@
             "installDockerBuildx": true
         },
         // Go toolchain - this project builds a single static binary.
-        // Pinned to the 1.26 stable line (1.26.7 current). 1.27.0 is released but
-        // brand new; the feature also contributes the golang.Go VS Code extension.
+        // Track the line go.mod's `toolchain` directive names, so the container
+        // builds with what it already has. Leave it behind and nothing breaks,
+        // it just downloads the real toolchain on first build: GOTOOLCHAIN=auto
+        // honours go.mod over whatever is installed here. The feature also
+        // contributes the golang.Go VS Code extension.
         "ghcr.io/devcontainers/features/go:1": {
-            "version": "1.26"
+            "version": "1.27"
         }
     },
     // Install jq + shellcheck, then the Claude and OpenAI Codex CLIs.

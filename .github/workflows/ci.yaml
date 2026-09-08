@@ -17,6 +17,17 @@ on:
 permissions:
   contents: read
 
+env:
+  # The Go language floor we INTEND, pinned here so a change to it has to be a
+  # deliberate edit by a human. go.mod's `go` directive is checked against this
+  # below, and the floor build below runs GOTOOLCHAIN=go$GO_FLOOR, so the pin is
+  # executed rather than merely compared.
+  #
+  # Four files carry this number and must move in one commit: go.mod, this pin
+  # (in BOTH ci.yaml files), docs/development.md's "Code standards", and the
+  # renovate.json rule barring the `golang` depType.
+  GO_FLOOR: "1.26.0"
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -27,6 +38,49 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # go.mod carries TWO Go versions and they mean different things, so this
+      # runs before setup-go: it needs no toolchain and reports in seconds.
+      #
+      # `toolchain` is what BUILDS. `go` is a language FLOOR that deliberately
+      # lags it, so a host with an older Go and no toolchain download still
+      # builds under GOTOOLCHAIN=local.
+      #
+      # The floor is NOT set by our code -- a module's directive must be at
+      # least its dependencies', and golang.org/x/sys keeps raising its own.
+      # It has moved the floor twice, neither time by anyone's decision:
+      #
+      #   x/sys v0.44.0 declares go 1.25.0  ->  floor 1.24 -> 1.25.0
+      #   x/sys v0.48.0 declares go 1.26.0  ->  floor 1.25.0 -> 1.26.0
+      #
+      # A `go mod tidy` run performs them, the first as a side effect of a
+      # security bump.
+      #
+      # So the first check below is the one that matters, and it is NOT a
+      # floor-versus-toolchain comparison: that stayed green through BOTH
+      # raises (1.25.0 <= 1.27.1, then 1.26.0 <= 1.27.1). Only pinning the
+      # expected floor catches one, because `go mod tidy` can rewrite go.mod
+      # but cannot edit a workflow. The ordering check is kept as well, because
+      # a floor above the toolchain breaks the offline host outright.
+      - name: Go floor agreement (GATE)
+        run: |
+          set -o errexit -o nounset -o pipefail
+          FLOOR=$(sed -n 's/^go \([0-9][0-9.]*\)[[:space:]]*$/\1/p' go.mod)
+          TOOLCHAIN=$(sed -n 's/^toolchain go\([0-9][0-9.]*\)[[:space:]]*$/\1/p' go.mod)
+          if [ -z "$FLOOR" ] || [ -z "$TOOLCHAIN" ]; then
+            echo "::error::Could not parse go.mod (floor '$FLOOR', toolchain '$TOOLCHAIN') -- this guard's sed patterns have drifted from the file format. Fix the guard; do not delete it." >&2
+            exit 1
+          fi
+          if [ "$FLOOR" != "$GO_FLOOR" ]; then
+            echo "::error::go.mod's language floor is 'go $FLOOR' but this workflow pins GO_FLOOR=$GO_FLOOR. If a dependency raised it transitively (go mod tidy does this silently), decide whether to accept the raise -- then move go.mod, BOTH ci.yaml pins, docs/development.md and renovate.json's golang-depType rule together." >&2
+            exit 1
+          fi
+          if [ "$(printf '%s\n%s\n' "$FLOOR" "$TOOLCHAIN" | sort -V | head -1)" != "$FLOOR" ]; then
+            echo "::error::go.mod's language floor (go $FLOOR) is newer than the toolchain it builds with (go$TOOLCHAIN). The floor must lag -- it exists for hosts that cannot download a toolchain." >&2
+            exit 1
+          fi
+          echo "Go floor agrees: floor=$FLOOR pin=$GO_FLOOR toolchain=$TOOLCHAIN"
+
       # go-version-file, not a literal version. setup-go prefers go.mod's
       # `toolchain` directive over `go` when both are present, so this builds
       # with exactly the toolchain go.mod names rather than whatever patch
@@ -62,6 +116,24 @@ jobs:
       # for it, so an arch-specific break would first surface at release time.
       - name: go build arm64 (GATE)
         run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...
+
+      # The floor is a promise to a host we never build on. Until this step it
+      # rested on a one-off manual note, which went stale the moment the floor
+      # moved -- go.mod claimed a go1.24.12 verification while declaring 1.25.0.
+      # Building at the floor turns the promise into something CI re-proves
+      # every run, and it is what catches new code using a language or stdlib
+      # feature the floor does not have (the failure the floor exists to
+      # prevent, and the one `go build` with the toolchain cannot see).
+      #
+      # This downloads GO_FLOOR's toolchain, so it deliberately does NOT model
+      # the GOTOOLCHAIN=local host; it models the LANGUAGE VERSION that host
+      # compiles at, which is the half that regresses. No -race: cgo is off for
+      # the same reason as the build gates, and -race is already covered below.
+      - name: go build at the floor (GATE)
+        run: |
+          set -o errexit -o nounset -o pipefail
+          GOTOOLCHAIN="go${GO_FLOOR}" go build ./...
+          GOTOOLCHAIN="go${GO_FLOOR}" go test ./...
 
       - name: go vet (GATE)
         run: go vet ./...

@@ -58,7 +58,8 @@ procedure that actually proves it is under **Manual verification** below.
 ### Quick start
 
 ```bash
-# Requires Go 1.26. The devcontainer provides it.
+# Needs Go 1.26 or newer. With the default GOTOOLCHAIN=auto any such Go fetches
+# the toolchain go.mod names (go1.27.1) and builds with that instead.
 go build ./...
 ./retrosaver help
 ```
@@ -148,10 +149,18 @@ Two things that cannot be tested any other way, and one that cannot be tested at
 
 ## Code standards
 
-- Go 1.24 is the language floor; `toolchain go1.26.7` is what CI and the devcontainer
-  build with. Raise the floor only when the code needs a newer language feature — it is
-  what lets a host with an older Go and no toolchain download still build. `gofmt` is a
-  hard CI gate; `go vet` and `go test -race` likewise.
+- Go 1.26 is the language floor; `toolchain go1.27.1` is what CI and the devcontainer
+  build with. The floor is what lets a host with an older Go and no toolchain download
+  still build, so it deliberately lags. **It is set by `golang.org/x/sys`, not by our
+  code** — the only post-1.23 feature in the tree is `strings.SplitSeq`, but a module's
+  `go` directive must be at least its dependencies', and x/sys keeps raising its own
+  (`v0.44.0` → `go 1.25.0`, `v0.48.0` → `go 1.26.0`). **Expect it to move again**, and
+  expect `go mod tidy` to do the moving without asking. CI pins the expected floor and
+  fails if `go.mod` drifts from it, so a raise cannot arrive unannounced; CI also builds
+  and tests at the floor, so the guarantee is exercised rather than asserted. Changing the
+  floor means changing four things in one commit: `go.mod`, `GO_FLOOR` in both `ci.yaml`
+  files, this paragraph, and the `renovate.json` rule. `gofmt` is a hard CI gate; `go vet`
+  and `go test -race` likewise.
 - Standard library only wherever possible. There are **exactly two** direct dependencies,
   both pure Go, and that is what keeps `CGO_ENABLED=0` viable and the artifact genuinely
   static:
