@@ -21,7 +21,7 @@ avoid the misleading connotation.
 **Status: implemented and verified on the host.** All seven packages are real and
 unit-tested, and no subcommand returns `ErrNotImplemented`. `idle`, `session`, `window` and
 the end-to-end state machine have all been verified against a live GNOME 50.1 session —
-**all six steps of the manual verification procedure below**, including the full
+**all seven steps of the manual verification procedure below**, including the full
 saver → lock → blank → teardown
 sequence, a second cycle, and reboot persistence from an installed `.deb`.
 
@@ -108,7 +108,7 @@ and the state machine against fakes; they never touch X, D-Bus or systemd, and n
 CI. Anything involving a real window, a real idle timer or a real lock is proven only by
 running this procedure on an actual GNOME/Wayland session.
 
-Six steps, in order. They are written against the installed package; the commands assume
+Seven steps, in order. They are written against the installed package; the commands assume
 `retrosaver setup` has been run.
 
 1. **A module runs at all.**
@@ -123,10 +123,16 @@ Six steps, in order. They are written against the installed package; the command
    with `journalctl --user -u retrosaver -f` visible from another device. Expect the saver
    at 15 s, the lock at 35 s, the display off at 45 s. Touch the trackpad mid-sequence and
    confirm a clean teardown with `idle-delay` back to `0`.
-5. **Restore the real timings** and restart.
-6. **Reboot**, log in, then `systemctl --user status retrosaver` → `active (running)`.
+5. **A manual lock does not start the screensaver.** With the same compressed timings,
+   press Super+L and leave the machine alone. Expect
+   `the session is already locked, not starting the screensaver` in the journal at 15 s,
+   `pgrep -f /usr/libexec/xscreensaver/` to find nothing, and the screen to stay dark —
+   then the lock and blank stages on their usual schedule, so the display still powers
+   off. Unlock, walk away again, and confirm a module does appear at the next 15 s.
+6. **Restore the real timings** and restart.
+7. **Reboot**, log in, then `systemctl --user status retrosaver` → `active (running)`.
 
-> Step 6 must be checked *after* logging in. `Linger=no`, so the `systemd --user` manager
+> Step 7 must be checked *after* logging in. `Linger=no`, so the `systemd --user` manager
 > only starts at login — a unit that looks dead at the greeter is expected, not a failure.
 
 Two things that cannot be tested any other way, and one that cannot be tested at all:
@@ -134,7 +140,7 @@ Two things that cannot be tested any other way, and one that cannot be tested at
 - **User activity cannot be faked.** Mutter gates `ResetIdletime` behind
   `MUTTER_DEBUG_RESET_IDLETIME`, and injecting XTEST input with `xdotool mousemove` does not
   move the idle clock either, because the idle monitor watches libinput rather than
-  synthetic X events. Step 4 needs a human at the keyboard.
+  synthetic X events. Steps 4 and 5 need a human at the keyboard.
 - **Live tests are gated on an environment variable**, not a build tag, so `go test ./...`
   stays green anywhere while one command exercises them for real:
   `RETROSAVER_LIVE=1 go test ./internal/... -run Live -v`. `TestLiveLock` additionally needs
@@ -207,6 +213,50 @@ needs a matching rule**, or it silently rots.
 
 ## Common gotchas
 
+- **A module launched while the session is locked is invisible, but not free.** GNOME's
+  lock shield is a compositor layer above every XWayland surface, so a module started
+  behind it displays nothing while still burning GPU and keeping the panel lit. Super+L is
+  how you get there: the keypress is user activity, so it *resets* Mutter's idle clock
+  rather than stopping it, and `SAVER_DELAY` later `onSaver` fires against a locked
+  session. `onSaver` therefore reads logind's `LockedHint` and skips the launch — still
+  advancing `stage` and still calling `ensureActiveWatch()`, but not `armCycle()`. The
+  check **fails open**: any error determining the lock state launches the module as
+  before, because a detection failure that silently disabled the screensaver would look
+  exactly like a healthy daemon doing nothing.
+- **Advancing `stage` is not what keeps the lock and blank stages on schedule.** They fire
+  from their own watches, and their `stage >= stageLock` / `>= stageBlank` guards are
+  satisfied at `stageIdle` just as well. `m.stage = stageSaver` on the suppressed path is
+  there for the monotonicity invariant the duplicate/out-of-order `WatchFired` defence
+  rests on, and to stop a repeat fire spawning another pair of `loginctl` processes. The
+  distinction matters when writing the test: a lock-and-blank test passes with the
+  assignment deleted, so `TestTheLockStateIsCheckedOncePerIdlePeriod` is what pins it.
+- **Use logind's `LockedHint`, not `org.gnome.ScreenSaver.GetActive`, to ask whether the
+  session is locked.** They are not two spellings of the same question and the difference is
+  measurable. Polling both once a second across two Super+L cycles on the reference host
+  (GNOME Shell 50.1, 2026-09-08):
+
+  ```
+  11:20:18  hint=no   active=true     shield up, hint has not flipped yet
+  11:20:19  hint=yes  active=true     hint flips 1s later
+  11:20:34  hint=no   active=false    unlocked
+  11:20:51  hint=yes  active=false    locked for 49s, GetActive says false
+  11:21:40  hint=no   active=false    unlocked
+  ```
+
+  `GetActive` reports whether the *shield is covering the screen*, so it goes false the
+  moment the password prompt is raised — while the session is still locked. That is
+  precisely the window this fix exists for, so `GetActive` alone would miss most of a real
+  lock. `LockedHint` was correct in both cycles. It also lags the shield by about a second
+  on the way in, which is harmless: the saver stage would have to come due inside that one
+  second to be affected, and the cost is one idle period of the old behaviour.
+- **`session.Lock` may let logind pick the session; `session.Locked` may not.** A bare
+  `loginctl lock-session` resolves to the user's display session, and locking an
+  already-locked session is a no-op, so guessing is safe there. A bare
+  `loginctl show-session` reports the *caller's* session — and the daemon runs under
+  `user@<uid>.service`, not in the graphical session's cgroup, where it prints nothing at
+  all rather than failing loudly. So an unresolvable or empty session id is an error, an
+  unparseable value is an error, and the daemon fails open on both. Parsing `""` as "not
+  locked" would turn the whole check into a no-op nothing would ever notice.
 - **`idle-delay 0` makes retrosaver the owner of the entire idle policy.** That is what
   stops gnome-shell blanking the screen out from under the screensaver, and it also
   disables GNOME's idle-dim. **Consequence: if the daemon is not running, there is no

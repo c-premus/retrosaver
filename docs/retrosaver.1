@@ -30,6 +30,9 @@ with the pointer hidden. Every 5 minutes thereafter the module is replaced by an
 one, chosen at random from those not yet shown this idle period. Switching modules is
 not a stage: it does not advance the sequence, and it stops at the lock threshold. See
 .BR CYCLE_AFTER .
+Skipped entirely if the session is already locked: GNOME's lock screen sits above every
+XWayland window, so a module started behind it would be invisible while still driving the
+GPU and keeping the display awake. The lock and blank stages still run.
 .TP
 .B Lock
 20 minutes idle by default. Kill the module and hand off to GNOME's own lock screen via

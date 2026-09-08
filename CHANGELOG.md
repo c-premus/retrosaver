@@ -11,6 +11,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Do not start the screensaver when the session is already locked. Locking with Super+L is
+  keyboard input, so it resets the idle clock rather than stopping it, and the saver stage
+  came due `SAVER_DELAY` later against a locked session — launching a module behind GNOME's
+  lock shield, where it was invisible but still drove the GPU and woke the display. The
+  saver stage now reads logind's `LockedHint` and skips the launch; the lock and blank
+  stages still run on schedule, so the display still powers off. The check fails open, so a
+  lock state that cannot be read starts the screensaver as before. This suppresses
+  *starting* a module on a locked session; a module already on screen when a lock arrives
+  without any user activity — `loginctl lock-session` over SSH, a lid close — still runs
+  until the lock or blank stage stops it.
+
 ## [0.2.0] - 2026-09-08
 
 ### Added

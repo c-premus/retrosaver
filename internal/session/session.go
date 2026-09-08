@@ -99,6 +99,62 @@ func graphicalSessionID() (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// Locked reports whether the graphical session is already showing GNOME's lock
+// screen, by reading logind's LockedHint.
+//
+// The daemon uses it to skip the saver stage after a manual lock. Super+L is
+// keyboard input, so it resets Mutter's idle clock rather than stopping it;
+// SAVER_DELAY later the saver stage comes due against a locked session, and a
+// module launched then lands *behind* GNOME's lock shield. The shield is a
+// compositor layer above every XWayland surface, so nothing is ever visible --
+// while the module still burns GPU and keeps the display lit.
+//
+// Unlike Lock, this does not fall back to letting logind pick the session. A
+// bare `loginctl show-session` reports the *caller's* session, and the daemon
+// runs under user@<uid>.service rather than in the graphical session's cgroup,
+// so the answer would describe the wrong session. The asymmetry is deliberate:
+// locking an already-locked session is a harmless no-op, whereas a wrong "yes"
+// here would silently disable the screensaver. An unresolvable session is
+// therefore an error, and the daemon fails open on it.
+//
+// Every error path returns false as well as the error, so a caller that
+// ignores the error still fails open.
+func Locked() (bool, error) {
+	id, err := graphicalSessionID()
+	if err != nil {
+		return false, fmt.Errorf("session: resolving the graphical session: %w", err)
+	}
+	if id == "" {
+		return false, errors.New("session: no graphical session to read LockedHint from")
+	}
+	out, err := run("loginctl", "show-session", id, "--value", "-p", "LockedHint")
+	if err != nil {
+		return false, fmt.Errorf("session: reading LockedHint for session %s: %w", id, err)
+	}
+	return parseLockedHint(out)
+}
+
+// parseLockedHint reads loginctl's rendering of the LockedHint property.
+//
+// `--value` prints a bare "yes" or "no". The "LockedHint=" prefix and the
+// true/false spellings are tolerated for the same reason parseIdleDelay accepts
+// a bare integer: the exact rendering is systemd's to change.
+//
+// Anything unrecognised -- empty output included -- is an error rather than a
+// silent false. A bare `loginctl show-session` prints nothing at all from the
+// daemon's cgroup, so treating "" as "not locked" would turn this check into a
+// no-op that nothing would ever notice.
+func parseLockedHint(s string) (bool, error) {
+	v := strings.TrimPrefix(strings.TrimSpace(s), "LockedHint=")
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "yes", "true", "1":
+		return true, nil
+	case "no", "false", "0":
+		return false, nil
+	}
+	return false, fmt.Errorf("session: parsing LockedHint value %q", strings.TrimSpace(s))
+}
+
 // IdleDelay reads org.gnome.desktop.session idle-delay, in seconds.
 func IdleDelay() (int, error) {
 	out, err := run("gsettings", "get", schema, key)

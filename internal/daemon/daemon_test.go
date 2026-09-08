@@ -293,6 +293,13 @@ type fakeSession struct {
 	lockErr      error
 	setDelayErr  error
 	restoreDelay error
+
+	// isLocked is what Locked reports. lockedErr models the read itself
+	// failing, and is deliberately independent of isLocked so a test can prove
+	// the daemon fails OPEN even when the value says "locked".
+	isLocked    bool
+	lockedErr   error
+	lockedCalls int
 }
 
 func (s *fakeSession) Lock() error {
@@ -300,6 +307,16 @@ func (s *fakeSession) Lock() error {
 	defer s.mu.Unlock()
 	s.locks++
 	return s.lockErr
+}
+
+func (s *fakeSession) Locked() (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lockedCalls++
+	if s.lockedErr != nil {
+		return false, s.lockedErr
+	}
+	return s.isLocked, nil
 }
 
 func (s *fakeSession) SetIdleDelay(n int) error {
@@ -335,6 +352,20 @@ func (s *fakeSession) restoreCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.restores
+}
+
+// setLocked changes what Locked reports. Tests call it only between
+// synchronised trace waits, so it never races the daemon goroutine.
+func (s *fakeSession) setLocked(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.isLocked = v
+}
+
+func (s *fakeSession) lockedCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lockedCalls
 }
 
 // ---------------------------------------------------------------- harness
@@ -1644,5 +1675,178 @@ func TestCycleStillArmsWhenIdletimeReadFails(t *testing.T) {
 	want := []time.Duration{300, 1200, 1320, 400}
 	if got := h.mon.intervals(); !slices.Equal(got, scale(want)) {
 		t.Errorf("idle watch thresholds = %v, want %v (fallback to counting)", got, scale(want))
+	}
+}
+
+// ------------------------------------------------- an already-locked session
+
+// Super+L is keyboard input, so it resets Mutter's idle clock rather than
+// stopping it: the saver stage comes due SAVER_DELAY after a manual lock. A
+// module launched then lands behind GNOME's lock shield, invisible but still
+// burning GPU and keeping the display lit.
+//
+// Note the trace order throughout this block. handleWatch emits its watch:*
+// tag *after* the handler returns, so a tag emitted from inside onSaver
+// arrives first. These tests cannot use h.fire, which waits on one tag only.
+func TestNoModuleLaunchesWhenTheSessionIsAlreadyLocked(t *testing.T) {
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.sess.isLocked = true
+	})
+
+	h.mon.fired <- wSaver
+	h.want("launch:suppressed")
+	h.want("watch:saver")
+
+	if got := h.lau.askedFor(); len(got) != 0 {
+		t.Errorf("launched %v behind the lock screen, want nothing launched", got)
+	}
+}
+
+// idle-delay is 0 while the daemon runs, so gnome-shell has no idle timeout of
+// its own. Suppressing the saver must not cost the display power-off too, or a
+// manually locked laptop would sit lit indefinitely.
+func TestLockAndBlankStillFireWhenTheSessionIsAlreadyLocked(t *testing.T) {
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.sess.isLocked = true
+	})
+
+	h.mon.fired <- wSaver
+	h.want("launch:suppressed")
+	h.want("watch:saver")
+
+	h.fire(wLock, "watch:lock")
+	if got := h.sess.lockCount(); got != 1 {
+		t.Errorf("Lock called %d times, want 1", got)
+	}
+
+	h.fire(wBlank, "watch:blank")
+	delays := h.sess.delays()
+	if len(delays) == 0 || delays[len(delays)-1] != blankIdleDelay {
+		t.Errorf("idle-delay writes = %v, want the last to be %d", delays, blankIdleDelay)
+	}
+}
+
+// Nothing is on screen to swap, so the cycle chain must not start. With
+// LOCK_AFTER=0 armCycle never reaches its lock-threshold cutoff, so a chain
+// armed here would re-arm every CYCLE_AFTER all night.
+func TestNoCycleWatchWhenTheSessionIsAlreadyLocked(t *testing.T) {
+	h := start(t, cyclingConfig(), func(h *harness) {
+		h.sess.isLocked = true
+	})
+
+	h.mon.fired <- wSaver
+	h.want("launch:suppressed")
+	h.want("watch:saver")
+
+	// arm() registers saver/lock/blank. A cycle watch would add 400.
+	want := []time.Duration{300, 1200, 1320}
+	if got := h.mon.intervals(); !slices.Equal(got, scale(want)) {
+		t.Errorf("idle watch thresholds = %v, want %v (no cycle watch)", got, scale(want))
+	}
+}
+
+// The user-active watch is the only way the daemon notices the user coming
+// back. Arming it must happen before the suppressed return, or a locked saver
+// stage strands the daemon at stageSaver -- and with LOCK_AFTER=0 there is no
+// later stage to arm one from.
+func TestASuppressedSaverStageStillArmsTheUserActiveWatch(t *testing.T) {
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.sess.isLocked = true
+	})
+
+	h.mon.fired <- wSaver
+	h.want("launch:suppressed")
+	h.want("watch:saver")
+
+	if got := h.mon.activeWatches(); len(got) != 1 {
+		t.Errorf("user-active watches = %v, want exactly 1", got)
+	}
+}
+
+// The check fails OPEN. A detection failure that disabled the screensaver
+// would be invisible: the daemon would look healthy and simply never do
+// anything. isLocked is true here as well, to prove the error beats the value.
+func TestAFailedLockStateCheckStillLaunches(t *testing.T) {
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.sess.isLocked = true
+		h.sess.lockedErr = errors.New("loginctl: no session")
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	if got := h.lau.askedFor(); len(got) != 1 {
+		t.Errorf("launched %v, want the screensaver to start despite the failed check", got)
+	}
+}
+
+// This is the mutation test for `m.stage = stageSaver` on the suppressed path.
+// Lock and blank fire from their own watches and their own guards are already
+// satisfied at stageIdle, so dropping the assignment does NOT break them --
+// what it breaks is the monotonicity defence, letting a duplicate WatchFired
+// re-enter the handler and spawn another pair of loginctl processes.
+func TestTheLockStateIsCheckedOncePerIdlePeriod(t *testing.T) {
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.sess.isLocked = true
+	})
+
+	h.mon.fired <- wSaver
+	h.want("launch:suppressed")
+	h.want("watch:saver")
+
+	// A duplicate fire must be swallowed by the stage guard.
+	h.fire(wSaver, "watch:saver")
+
+	if got := h.sess.lockedCount(); got != 1 {
+		t.Errorf("Locked consulted %d times in one idle period, want 1", got)
+	}
+}
+
+// Suppression is not latched state -- it is recomputed at each onSaver. So
+// unlocking needs no un-suppress path: the password is user input, which fires
+// the user-active watch, which resets and re-arms.
+func TestUserActivityAfterASuppressedSaverStageReArms(t *testing.T) {
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.sess.isLocked = true
+	})
+
+	h.mon.fired <- wSaver
+	h.want("launch:suppressed")
+	h.want("watch:saver")
+
+	h.sess.setLocked(false)
+	h.fire(wActive, "watch:active")
+
+	h.fire(wSaver2, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	if got := h.lau.askedFor(); len(got) != 1 {
+		t.Errorf("launched %v, want one module once the session was unlocked", got)
+	}
+}
+
+// Normally unreachable, because a suppressed onSaver arms no cycle chain. This
+// covers the reverse order: the saver started unlocked and the lock arrived
+// without user activity, via `loginctl lock-session` over SSH or a lid close.
+func TestNoSwapWhileTheSessionIsLocked(t *testing.T) {
+	h := start(t, cyclingConfig(), func(h *harness) {
+		h.lau.names = []string{"atlantis", "flame"}
+		h.lau.honourAvoid = true
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	h.sess.setLocked(true)
+	h.mon.fired <- wCycle
+	h.want("launch:suppressed")
+	h.want("watch:cycle")
+
+	if got, want := h.lau.askedFor(), []string{"atlantis"}; !slices.Equal(got, want) {
+		t.Errorf("modules launched = %v, want %v (no swap behind the lock screen)", got, want)
+	}
+	// The chain stops rather than re-arming: user activity is what restarts it.
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 0 {
+		t.Errorf("the running module was stopped %d times, want 0", got)
 	}
 }

@@ -389,3 +389,162 @@ func TestSaveIdleDelayLosesRacesInsteadOfOverwriting(t *testing.T) {
 			got)
 	}
 }
+
+// ------------------------------------------------------------------- Locked
+
+func TestParseLockedHint(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    bool
+		wantErr bool
+	}{
+		{in: "yes\n", want: true},
+		{in: "no\n", want: false},
+		{in: "  yes  ", want: true},
+		{in: "LockedHint=yes\n", want: true},
+		{in: "LockedHint=no\n", want: false},
+		{in: "true", want: true},
+		{in: "false", want: false},
+		{in: "1", want: true},
+		{in: "0", want: false},
+		// A bare `loginctl show-session` prints nothing from the daemon's
+		// cgroup. Parsing that as "not locked" would make the check a silent
+		// no-op, so it must be an error.
+		{in: "", wantErr: true},
+		{in: "   \n", wantErr: true},
+		{in: "maybe", wantErr: true},
+	}
+	for _, c := range cases {
+		got, err := parseLockedHint(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("parseLockedHint(%q) = %v, want an error", c.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseLockedHint(%q) = %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("parseLockedHint(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestLockedReadsLockedHintForTheGraphicalSession(t *testing.T) {
+	t.Setenv("XDG_SESSION_ID", "")
+	f := &fakeRun{stdout: map[string]string{
+		"loginctl show-user":    "2\n",
+		"loginctl show-session": "no\n",
+	}}
+	f.install(t)
+
+	locked, err := Locked()
+	if err != nil {
+		t.Fatalf("Locked() = %v", err)
+	}
+	if locked {
+		t.Error("Locked() = true, want false")
+	}
+	want := []string{"show-session", "2", "--value", "-p", "LockedHint"}
+	if args := f.lastArgs(t, "loginctl"); !slices.Equal(args, want) {
+		t.Errorf("loginctl args = %v, want %v", args, want)
+	}
+}
+
+func TestLockedReportsALockedSession(t *testing.T) {
+	t.Setenv("XDG_SESSION_ID", "")
+	f := &fakeRun{stdout: map[string]string{
+		"loginctl show-user":    "2\n",
+		"loginctl show-session": "yes\n",
+	}}
+	f.install(t)
+
+	locked, err := Locked()
+	if err != nil {
+		t.Fatalf("Locked() = %v", err)
+	}
+	if !locked {
+		t.Error("Locked() = false, want true")
+	}
+}
+
+func TestLockedPrefersXDGSessionID(t *testing.T) {
+	t.Setenv("XDG_SESSION_ID", "7")
+	f := &fakeRun{stdout: map[string]string{"loginctl show-session": "yes\n"}}
+	f.install(t)
+
+	if _, err := Locked(); err != nil {
+		t.Fatalf("Locked() = %v", err)
+	}
+	want := []string{"show-session", "7", "--value", "-p", "LockedHint"}
+	if args := f.lastArgs(t, "loginctl"); !slices.Equal(args, want) {
+		t.Errorf("loginctl args = %v, want %v", args, want)
+	}
+	for _, c := range f.calls {
+		if len(c.args) > 0 && c.args[0] == "show-user" {
+			t.Error("resolved the session via show-user despite XDG_SESSION_ID being set")
+		}
+	}
+}
+
+// Deliberately asymmetric with TestLockFallsBackToBareLockSession. Lock may
+// drop the session id, because a bare `loginctl lock-session` resolves to the
+// user's display session and locking an already-locked session is a no-op.
+// Locked may not: a bare `loginctl show-session` reports the *caller's*
+// session, and the daemon runs under user@<uid>.service, so a guess would
+// answer about the wrong session -- and a wrong "yes" silently disables the
+// screensaver.
+func TestLockedFailsRatherThanGuessingTheSession(t *testing.T) {
+	t.Setenv("XDG_SESSION_ID", "")
+	f := &fakeRun{err: map[string]error{
+		"loginctl show-user": errors.New("no such user"),
+	}}
+	f.install(t)
+
+	locked, err := Locked()
+	if err == nil {
+		t.Fatalf("Locked() = %v, want an error", locked)
+	}
+	if locked {
+		t.Error("Locked() = true alongside an error, want false so callers fail open")
+	}
+	for _, c := range f.calls {
+		if len(c.args) > 0 && c.args[0] == "show-session" {
+			t.Errorf("issued %v with no session id, want no call at all", c.args)
+		}
+	}
+}
+
+// graphicalSessionID returns ("", nil) when show-user prints a blank line --
+// a user with no display session. That is the hole the empty-id guard closes.
+func TestLockedRejectsAnEmptySessionID(t *testing.T) {
+	t.Setenv("XDG_SESSION_ID", "")
+	f := &fakeRun{stdout: map[string]string{"loginctl show-user": "\n"}}
+	f.install(t)
+
+	locked, err := Locked()
+	if err == nil {
+		t.Fatalf("Locked() = %v, want an error", locked)
+	}
+	for _, c := range f.calls {
+		if len(c.args) > 0 && c.args[0] == "show-session" {
+			t.Errorf("issued %v with an empty session id, want no call at all", c.args)
+		}
+	}
+}
+
+func TestLockedReportsUnparseableOutput(t *testing.T) {
+	t.Setenv("XDG_SESSION_ID", "2")
+	f := &fakeRun{stdout: map[string]string{"loginctl show-session": "banana\n"}}
+	f.install(t)
+
+	locked, err := Locked()
+	if err == nil {
+		t.Fatalf("Locked() = %v, want an error", locked)
+	}
+	if locked {
+		t.Error("Locked() = true alongside an error, want false so callers fail open")
+	}
+}

@@ -67,6 +67,9 @@ type (
 	// controller drives the GNOME session.
 	controller interface {
 		Lock() error
+		// Locked reports whether the session is already showing GNOME's lock
+		// screen, so the saver stage can skip launching behind it.
+		Locked() (bool, error)
 		SetIdleDelay(seconds int) error
 		RestoreIdleDelay() error
 	}
@@ -186,6 +189,7 @@ func (l *realLauncher) Launch(ctx context.Context, name string) (saver, error) {
 type sessionController struct{}
 
 func (sessionController) Lock() error              { return session.Lock() }
+func (sessionController) Locked() (bool, error)    { return session.Locked() }
 func (sessionController) SetIdleDelay(n int) error { return session.SetIdleDelay(n) }
 func (sessionController) RestoreIdleDelay() error  { return session.RestoreIdleDelay() }
 
@@ -458,13 +462,50 @@ func (m *machine) onSaver() {
 	if m.stage >= stageSaver {
 		return
 	}
+	// Advancing the stage is not what keeps the lock and blank stages on
+	// schedule -- those fire from their own watches and their own guards are
+	// satisfied at stageIdle just as well. It is the monotonicity invariant
+	// that the duplicate/out-of-order WatchFired defence rests on, and on the
+	// locked path below it is also what stops a repeat fire spawning another
+	// pair of loginctl processes.
 	m.stage = stageSaver
 	// Every stage arms it, not just the saver: on a cold start past the lock
 	// threshold the lock watch can fire without onSaver ever running.
 	m.ensureActiveWatch()
+	if m.locked() {
+		// A module launched now would land behind GNOME's lock shield, which
+		// is a compositor layer above every XWayland surface: invisible, and
+		// still burning GPU and keeping the display lit. Do not abandon the
+		// cycle -- idle-delay is 0, so the lock and blank stages must still
+		// run and the display must still power off.
+		//
+		// ensureActiveWatch above is load-bearing and must stay before this
+		// return: it is the only way the daemon notices the user coming back,
+		// and with LOCK_AFTER=0 there is no later stage to arm one from.
+		// armCycle below is skipped: nothing is on screen to swap.
+		m.d.log.Info("idle: the session is already locked, not starting the screensaver")
+		m.d.trace("launch:suppressed")
+		return
+	}
 	m.armCycle()
 	m.d.log.Info("idle: starting the screensaver")
 	m.startLaunch()
+}
+
+// locked reports whether the session is already showing GNOME's lock screen.
+//
+// It fails OPEN. A lock state that cannot be determined launches the module as
+// before, because a detection failure that silently disabled the screensaver
+// would be invisible -- the daemon would look perfectly healthy and simply
+// never do anything -- whereas one that launches redundantly is only ever the
+// old behaviour.
+func (m *machine) locked() bool {
+	locked, err := m.d.session.Locked()
+	if err != nil {
+		m.d.log.Warn("reading the session lock state, starting the screensaver anyway", "err", err)
+		return false
+	}
+	return locked
 }
 
 // armCycle registers the watch for the next module swap, when one is due
@@ -534,6 +575,20 @@ func (m *machine) onCycle(id idle.WatchID) {
 
 	if m.stage != stageSaver {
 		// Locked, blanked, or never started. Nothing to swap.
+		return
+	}
+	if m.locked() {
+		// Normally unreachable: a suppressed onSaver arms no cycle chain at
+		// all. This covers the reverse order -- the saver started against an
+		// unlocked session and the lock arrived without user activity, via
+		// `loginctl lock-session` over SSH or a lid close -- where a swap
+		// would otherwise put a fresh window up behind the shield.
+		//
+		// The chain stops here rather than re-arming, the same rule as
+		// onSaver, so user activity is what restarts it. That is the recovery
+		// path for everything else in this machine too.
+		m.d.log.Info("cycle: the session is locked, not swapping the module")
+		m.d.trace("launch:suppressed")
 		return
 	}
 	m.cycles++

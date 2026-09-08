@@ -63,6 +63,22 @@ func TestLiveGraphicalSessionID(t *testing.T) {
 	t.Logf("graphical session id = %q", id)
 }
 
+// TestLiveLocked reads the real LockedHint. It only reads, so it needs no
+// opt-in beyond RETROSAVER_LIVE.
+//
+// This is the only thing that proves the invocation is right: the fake in
+// session_test.go asserts the arguments we chose, not that loginctl accepts
+// them or that logind spells the value the way parseLockedHint expects.
+func TestLiveLocked(t *testing.T) {
+	requireLive(t)
+
+	locked, err := Locked()
+	if err != nil {
+		t.Fatalf("Locked() = %v", err)
+	}
+	t.Logf("session LockedHint = %v", locked)
+}
+
 // TestLiveLock genuinely locks the screen, so it needs its own opt-in beyond
 // RETROSAVER_LIVE. Unlock the session afterwards to continue.
 //

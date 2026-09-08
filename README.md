@@ -55,6 +55,11 @@ at random from those not yet shown this idle period — so a long break is a sli
 rather than a quarter of an hour of the same fractal. Once every selectable module has
 been shown the set starts over, and if only one module is selectable nothing switches.
 
+If the session is already locked when the saver stage comes due — you pressed Super+L and
+walked away — no module starts. GNOME's lock screen sits above every XWayland window, so
+a module launched behind it would be invisible while still driving the GPU and keeping
+the display awake. Stages 2 and 3 still run on schedule, so the display still powers off.
+
 All the delays are configurable, cycling and stages 2 and 3 can each be disabled, and
 changes take effect as soon as you save the file.
 
