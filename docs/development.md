@@ -77,7 +77,7 @@ tests/smoke.sh         # host-only; needs a real GNOME/Wayland session
 ```bash
 gofmt -l .             # must print nothing; CI gates on this
 go vet ./...
-shellcheck tests/smoke.sh scripts/postinstall.sh scripts/generate-changelog.sh
+shellcheck tests/smoke.sh scripts/*.sh
 ```
 
 CI gates on shellcheck, and the host may not have it while the devcontainer does. Fetch it
@@ -87,6 +87,23 @@ without root:
 apt-get download shellcheck && dpkg-deb -x ./shellcheck_*.deb /tmp/sc
 /tmp/sc/usr/bin/shellcheck tests/smoke.sh scripts/*.sh
 ```
+
+### Previewing modules
+
+`scripts/demo.sh` runs modules one after another in an ordinary window, printing each
+one's name and description before it starts. It is a preview, not the screensaver:
+nothing goes fullscreen, and a running daemon is left alone.
+
+```bash
+scripts/demo.sh                 # the configured set, as `retrosaver list` selects it
+scripts/demo.sh --all -t 10     # every installed module, 10 s each
+scripts/demo.sh atlantis flame  # exactly these, in this order
+```
+
+It holds a GNOME idle inhibitor while it runs, so the daemon cannot start a fullscreen
+module over the demo or lock the session. It stops only the processes it started and
+never calls `retrosaver stop`, which would give `idle-delay` back to GNOME while the
+daemon still owns it.
 
 ### Packaging
 
