@@ -301,6 +301,9 @@ func (s *Saver) Process() *os.Process {
 
 // Stop terminates the module and the pointer-hiding process.
 //
+// It removes the runtime state files only while they still name this module,
+// so stopping an outgoing module never erases the state of its replacement.
+//
 // It is idempotent: the daemon may call it from a teardown that races the
 // launch that created it, and `retrosaver stop` may already have done the job
 // from another shell.
@@ -342,7 +345,7 @@ func (s *Saver) Stop() error {
 			}
 		}
 
-		errs = append(errs, clearState())
+		errs = append(errs, clearStateFor(pidOf(s.cmd)))
 		s.stopErr = errors.Join(errs...)
 	})
 	return s.stopErr
@@ -491,6 +494,21 @@ func writeFile(path, content string) error {
 		return fmt.Errorf("window: writing %s: %w", path, err)
 	}
 	return nil
+}
+
+// clearStateFor removes the runtime files only while they still describe pid.
+//
+// On a swap the daemon stops the outgoing module after its replacement has
+// written its own state, and a replacement that fails to start is stopped while
+// the old module is still on screen. An unconditional clear on either path
+// erases the state of the module that is actually running, leaving
+// `retrosaver stop` unable to find its unclutter and `retrosaver run` blind to
+// it.
+func clearStateFor(pid int) error {
+	if got, ok := readPID(pidPath()); !ok || got != pid {
+		return nil
+	}
+	return clearState()
 }
 
 // clearState removes the runtime files. Missing files are not an error.

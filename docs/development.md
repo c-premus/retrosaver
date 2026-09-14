@@ -401,6 +401,14 @@ needs a matching rule**, or it silently rots.
   failure would break the rule that `retrosaver stop` is a clean no-op.
 - **Every PID read off disk is checked against `/proc/<pid>/cmdline` before being signalled.**
   The runtime state file can be minutes stale after a crash and PIDs are recycled.
+- **A `Saver` clears the runtime state files only while the PID file still names it.** On a
+  swap the replacement writes its state before `handleLaunch` stops the outgoing module, and
+  a replacement that fails to start is stopped while the old module is still on screen. An
+  unconditional `clearState()` in `Stop` erased the running module's files on both paths —
+  observed on every swap on the host — leaving `retrosaver stop` unable to find its
+  `unclutter`. `TestStopLeavesANewerSaversStateAlone` pins it. `StopRunning` still clears
+  unconditionally, because it is the panic button and has just stopped whatever the files
+  named.
 - **nfpm does not expand environment variables in `contents[].src`.** The binary is staged
   at a fixed path before packaging; a `${GOARCH}` there fails with "Glob failed".
 - Per-user installation lives in `retrosaver setup` / `teardown`, **not** in Debian

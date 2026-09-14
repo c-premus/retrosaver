@@ -11,6 +11,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep track of the running module after the screensaver switches to another one. Each
+  switch deleted the new module's runtime state files, so from then until the next idle
+  period `retrosaver stop` run from a shell stopped the module but left `unclutter-xfixes`
+  running, hiding the pointer across the whole desktop, and `retrosaver run` could not see
+  the running module and would start a second one over it. The daemon's own teardown was
+  unaffected. A module now removes the state files only while they still name it.
+
 ## [0.2.2] - 2026-09-08
 
 ### Fixed

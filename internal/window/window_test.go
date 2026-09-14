@@ -5,6 +5,7 @@ package window
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -214,6 +215,69 @@ func TestWriteStateSkipsAbsentUnclutter(t *testing.T) {
 	}
 	if _, err := os.Stat(unclutterPIDPath()); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("unclutter pid file exists with pid 0: %v", err)
+	}
+}
+
+// reapedSaver returns a Saver for pid whose process has already been reaped, so
+// Stop signals nothing and exercises only its handling of the state files.
+func reapedSaver(pid int) *Saver {
+	done := make(chan struct{})
+	close(done)
+	return &Saver{cmd: &exec.Cmd{Process: &os.Process{Pid: pid}}, done: done}
+}
+
+// On a swap the replacement writes its state before the daemon stops the
+// outgoing module. Stopping the old one must leave the new one's files in
+// place, or `retrosaver stop` cannot find the unclutter that is still running.
+func TestStopLeavesANewerSaversStateAlone(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	if err := writeState(9001, "coral", 9002); err != nil {
+		t.Fatalf("writeState() = %v", err)
+	}
+	if err := reapedSaver(4321).Stop(); err != nil {
+		t.Fatalf("Stop() = %v", err)
+	}
+	for path, want := range map[string]string{
+		pidPath():          "9001",
+		modulePath():       "coral",
+		unclutterPIDPath(): "9002",
+	} {
+		if got := readTrimmed(t, path); got != want {
+			t.Errorf("%s = %q, want %q", filepath.Base(path), got, want)
+		}
+	}
+}
+
+// The other half of the ownership check: a module stopping while its own state
+// is current must still clear it, so a fix that never clears cannot pass.
+func TestStopClearsItsOwnState(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	if err := writeState(4321, "ifs", 4322); err != nil {
+		t.Fatalf("writeState() = %v", err)
+	}
+	if err := reapedSaver(4321).Stop(); err != nil {
+		t.Fatalf("Stop() = %v", err)
+	}
+	for _, p := range []string{pidPath(), modulePath(), unclutterPIDPath()} {
+		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("os.Stat(%s) = %v, want ErrNotExist", p, err)
+		}
+	}
+}
+
+func TestClearStateForWithNoPIDFile(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	if err := writeFile(modulePath(), "flame"); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearStateFor(4321); err != nil {
+		t.Errorf("clearStateFor() with no pid file = %v, want nil", err)
+	}
+	if got := readTrimmed(t, modulePath()); got != "flame" {
+		t.Errorf("module file = %q, want it left alone", got)
 	}
 }
 
