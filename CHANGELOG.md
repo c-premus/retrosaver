@@ -11,6 +11,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-14
+
 ### Fixed
 
 - Keep track of the running module after the screensaver switches to another one. Each
@@ -160,7 +162,8 @@ First release.
 - GNOME on Wayland only. KDE and wlroots support the Wayland idle protocols, so upstream
   xscreensaver 6.11+ works there natively.
 
-[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/c-premus/retrosaver/releases/tag/v0.2.3
 [0.2.2]: https://github.com/c-premus/retrosaver/releases/tag/v0.2.2
 [0.2.1]: https://github.com/c-premus/retrosaver/releases/tag/v0.2.1
 [0.2.0]: https://github.com/c-premus/retrosaver/releases/tag/v0.2.0
