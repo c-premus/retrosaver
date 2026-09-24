@@ -39,8 +39,6 @@ go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
 shellcheck $(git ls-files '*.sh')
 ```
 
-`.devcontainer/` provides a working Go toolchain and `shellcheck` in one step.
-
 ## What CI cannot tell you
 
 **A green `go test` is not evidence the screensaver works.** The unit tests cover pure logic

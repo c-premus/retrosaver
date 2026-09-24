@@ -185,11 +185,10 @@ Mitigations, all implemented:
 
 ## Development
 
-Start with [`CONTRIBUTING.md`](CONTRIBUTING.md). See
-[`docs/development.md`](docs/development.md) for the full development guide, and
-[`.devcontainer/README.md`](.devcontainer/README.md) for the
-container's scope — notably that it **cannot** run or integration-test the daemon, since
-there is no Mutter, session bus, XWayland or `systemd --user` inside a container.
+Start with [`CONTRIBUTING.md`](CONTRIBUTING.md), then
+[`docs/development.md`](docs/development.md) for the full development guide. Note that
+the daemon **cannot** be run or integration-tested in a container or in CI, since there is
+no Mutter, session bus, XWayland or `systemd --user` there.
 
 Security policy, and a note on why this is not a screen locker, are in
 [`SECURITY.md`](SECURITY.md).

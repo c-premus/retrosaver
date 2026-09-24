@@ -80,8 +80,7 @@ go vet ./...
 shellcheck tests/smoke.sh scripts/*.sh
 ```
 
-CI gates on shellcheck, and the host may not have it while the devcontainer does. Fetch it
-without root:
+CI gates on shellcheck, and the host may not have it. Fetch it without root:
 
 ```bash
 apt-get download shellcheck && dpkg-deb -x ./shellcheck_*.deb /tmp/sc
@@ -166,8 +165,8 @@ Two things that cannot be tested any other way, and one that cannot be tested at
 
 ## Code standards
 
-- Go 1.26 is the language floor; `toolchain go1.27.1` is what CI and the devcontainer
-  build with. The floor is what lets a host with an older Go and no toolchain download
+- Go 1.26 is the language floor; `toolchain go1.27.1` is what CI builds
+  with. The floor is what lets a host with an older Go and no toolchain download
   still build, so it deliberately lags. **It is set by `golang.org/x/sys`, not by our
   code** — the only post-1.23 feature in the tree is `strings.SplitSeq`, but a module's
   `go` directive must be at least its dependencies', and x/sys keeps raising its own
@@ -361,9 +360,9 @@ needs a matching rule**, or it silently rots.
   channel rather than sleeping.
 - **The config file is parsed, never sourced.** It is shell-shaped `KEY=value`, but
   `internal/config` uses a line parser. Do not "simplify" this by shelling out.
-- **The devcontainer cannot run or integration-test the daemon.** No Mutter, no session
-  bus, no XWayland, no `systemd --user`. It builds, vets, unit-tests and packages. Real
-  verification is the manual procedure below, on the host. See `.devcontainer/README.md`.
+- **No container or CI job can run or integration-test the daemon.** No Mutter, no session
+  bus, no XWayland, no `systemd --user`. A container builds, vets, unit-tests and packages.
+  Real verification is the manual procedure above, on the host.
 - **A green `go test` is not evidence the screensaver works.** The unit tests cover pure
   logic and the state machine against fakes; they never touch X, D-Bus or systemd. Anything
   involving a real window is proven only by the manual verification procedure on a host.

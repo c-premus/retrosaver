@@ -249,8 +249,8 @@ func TestReloadTriggersStopOnCancel(t *testing.T) {
 //
 // Without this, any test calling installConfig reads the real
 // /usr/share/retrosaver/retrosaver.conf.example whenever the .deb is installed,
-// and the suite then asserts one thing on a packaging host and another in the
-// devcontainer.
+// and the suite then asserts one thing on a packaging host and another
+// everywhere else.
 func noPackagedExample(t *testing.T) {
 	t.Helper()
 	prev := exampleConfigPath

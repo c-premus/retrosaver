@@ -373,7 +373,7 @@ const (
 // compiled-in default. It is a var, not a const, so tests can point it at a
 // path they control: as a const, any test touching installConfig silently
 // reads the real installed file whenever the .deb happens to be present, and
-// then asserts different content on a packaging host than in the devcontainer.
+// then asserts different content on a packaging host than anywhere else.
 var exampleConfigPath = "/usr/share/retrosaver/retrosaver.conf.example"
 
 func cmdSetup(args []string) error {

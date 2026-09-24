@@ -7,8 +7,8 @@ import (
 )
 
 // These tests talk to a real gnome-shell on the session bus. They are gated on
-// an environment variable rather than a build tag so that CI, the devcontainer
-// and `go test ./...` on any non-GNOME machine skip them cleanly, while a
+// an environment variable rather than a build tag so that CI and
+// `go test ./...` on any non-GNOME machine skip them cleanly, while a
 // single command exercises them on the host:
 //
 //	RETROSAVER_LIVE=1 go test ./internal/idle -run Live -v

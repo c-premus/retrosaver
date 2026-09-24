@@ -32,7 +32,7 @@ module github.com/c-premus/retrosaver
 // renovate.json's `golang` depType rule.
 go 1.26.0
 
-// What CI and the devcontainer actually build with. Bump this freely; bump the
+// What CI actually builds with. Bump this freely; bump the
 // line above only when a dependency forces it or the code needs a newer feature.
 toolchain go1.27.1
 
