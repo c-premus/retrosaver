@@ -532,7 +532,7 @@ func cmdTeardown(args []string) error {
 	fmt.Println("  idle-delay      restored; GNOME owns the idle policy again")
 	fmt.Printf("  config kept     %s (remove it by hand if you want it gone)\n", cfgPath)
 	fmt.Println()
-	fmt.Println("Remove the package with: sudo apt remove retrosaver")
+	fmt.Println("Remove the retrosaver package with your package manager.")
 	return nil
 }
 
@@ -574,14 +574,14 @@ func preflight() error {
 	}
 	available, err := modules.NewFinder().Available(cfg.Include, cfg.Exclude)
 	if err != nil {
-		return fmt.Errorf("setup: %w (install the xscreensaver-data and -gl packages)", err)
+		return fmt.Errorf("setup: %w (install your distribution's XScreenSaver module packages)", err)
 	}
 	fmt.Printf("preflight ok: GNOME on Wayland, idle monitor reachable, %d modules available\n",
 		len(available))
 
 	if _, err := os.Stat(packagedUnitPath); err != nil {
 		return fmt.Errorf(
-			"setup: %s is missing, so there is no unit to enable. Install the .deb rather "+
+			"setup: %s is missing, so there is no unit to enable. Install the .deb or .rpm rather "+
 				"than running setup from a source build", packagedUnitPath)
 	}
 	return nil
@@ -598,7 +598,7 @@ func requireBinaries() error {
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("setup: missing required tools: %s (sudo apt install %s)",
+		return fmt.Errorf("setup: missing required tools: %s (install the packages of the same name: %s)",
 			strings.Join(missing, ", "), strings.Join(missing, " "))
 	}
 	return nil
