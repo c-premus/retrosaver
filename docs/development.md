@@ -18,7 +18,7 @@ trigger and a fullscreen wrapper. It ships as one static Go binary plus a system
 sense. This project says **module** everywhere — code, docs, config keys, log output — to
 avoid the misleading connotation.
 
-**Status: implemented and verified on the host.** All seven packages are real and
+**Status: implemented and verified on the host.** All eight packages are real and
 unit-tested, and no subcommand returns `ErrNotImplemented`. `idle`, `session`, `window` and
 the end-to-end state machine have all been verified against a live GNOME 50.1 session —
 **all seven steps of the manual verification procedure below**, including the full
@@ -40,7 +40,7 @@ the idle monitor.
 | Blank | 22 min idle | Power the display off |
 
 ```
-cmd/retrosaver/      subcommand dispatch: daemon | run | stop | list | setup | teardown
+cmd/retrosaver/      subcommand dispatch: daemon | run | stop | list | setup | teardown (+ version, help)
 internal/config/     KEY=value parser (never executes the file)
 internal/modules/    discovery: config XML basenames ∩ executables in libexec
 internal/idle/       org.gnome.Mutter.IdleMonitor D-Bus client
@@ -60,14 +60,14 @@ procedure that actually proves it is under **Manual verification** below.
 ```bash
 # Needs Go 1.26 or newer. With the default GOTOOLCHAIN=auto any such Go fetches
 # the toolchain go.mod names (go1.27.1) and builds with that instead.
-go build ./...
+go build -o retrosaver ./cmd/retrosaver
 ./retrosaver help
 ```
 
 ### Testing
 
 ```bash
-go test ./...          # unit tests (config + modules only; see gotchas)
+go test ./...          # every package; live tests skip unless RETROSAVER_LIVE=1
 go test -race ./...    # what CI runs
 tests/smoke.sh         # host-only; needs a real GNOME/Wayland session
 ```
@@ -101,21 +101,23 @@ scripts/demo.sh atlantis flame  # exactly these, in this order
 
 It holds a GNOME idle inhibitor while it runs, so the daemon cannot start a fullscreen
 module over the demo or lock the session. It stops only the processes it started and
-never calls `retrosaver stop`, which would give `idle-delay` back to GNOME while the
-daemon still owns it.
+never calls `retrosaver stop`, which stops every running module rather than just the
+demo's, and which in older releases also gave `idle-delay` back to GNOME while the daemon
+still owned it.
 
 ### Packaging
 
 Use the release workflow's exact flags, or `main.version` stays `"dev"`. The man page must
 be gzipped into `dist/` first: nfpm does not compress man pages, and `nfpm.yaml` refers to
-`./dist/retrosaver.1.gz`.
+`./dist/retrosaver.1.gz`. CI and the release workflow use nfpm 2.47.0.
 
 ```bash
+mkdir -p dist
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
-  -ldflags "-s -w -X main.version=0.0.1" -o dist/retrosaver-linux-amd64 ./cmd/retrosaver
+  -ldflags "-s -w -X main.version=0.0.0-dev" -o dist/retrosaver-linux-amd64 ./cmd/retrosaver
 gzip -9 -n -c docs/retrosaver.1 > dist/retrosaver.1.gz
 cp dist/retrosaver-linux-amd64 dist/retrosaver
-VERSION=0.0.1 GOARCH=amd64 nfpm pkg --packager deb --target dist/
+VERSION=0.0.0-dev GOARCH=amd64 nfpm pkg --packager deb --target dist/
 ```
 
 ## Manual verification
@@ -152,7 +154,7 @@ Seven steps, in order. They are written against the installed package; the comma
 > Step 7 must be checked *after* logging in. `Linger=no`, so the `systemd --user` manager
 > only starts at login — a unit that looks dead at the greeter is expected, not a failure.
 
-Two things that cannot be tested any other way, and one that cannot be tested at all:
+What cannot be automated, and how the tests that need a real session are kept out of CI:
 
 - **User activity cannot be faked.** Mutter gates `ResetIdletime` behind
   `MUTTER_DEBUG_RESET_IDLETIME`, and injecting XTEST input with `xdotool mousemove` does not
@@ -174,8 +176,9 @@ Two things that cannot be tested any other way, and one that cannot be tested at
   expect `go mod tidy` to do the moving without asking. CI pins the expected floor and
   fails if `go.mod` drifts from it, so a raise cannot arrive unannounced; CI also builds
   and tests at the floor, so the guarantee is exercised rather than asserted. Changing the
-  floor means changing four things in one commit: `go.mod`, `GO_FLOOR` in both `ci.yaml`
-  files, this paragraph, and the `renovate.json` rule. `gofmt` is a hard CI gate; `go vet`
+  floor means changing four things in one commit: `go.mod`, the `GO_FLOOR` pin in CI (which
+  has an upstream counterpart), this paragraph, and the upstream Renovate rule that stops
+  it proposing `go` directive bumps. `gofmt` is a hard CI gate; `go vet`
   and `go test -race` likewise.
 - Standard library only wherever possible. There are **exactly two** direct dependencies,
   both pure Go, and that is what keeps `CGO_ENABLED=0` viable and the artifact genuinely
@@ -398,6 +401,13 @@ needs a matching rule**, or it silently rots.
   cosmetic, so failing to start it must never cost a working screensaver.
 - **`pkill` exits 1 for "no processes matched"**, which is the normal case. Treating it as a
   failure would break the rule that `retrosaver stop` is a clean no-op.
+- **`retrosaver stop` restores `idle-delay` only when no daemon is running.** A daemon owns
+  the setting for as long as it runs, so a manual `run` then `stop` used to hand blanking
+  back to gnome-shell under a daemon that still believed it held `0`. `cmdStop` scans
+  `/proc` for a `retrosaver daemon` process first. `ExecStopPost` runs after the daemon has
+  exited, so the unit's own cleanup still restores. The check **fails toward restoring**:
+  an unreadable `/proc` counts as no daemon, because `idle-delay` stuck at `0` with no
+  daemon means no auto-lock at all. `--keep-idle-delay` skips the restore unconditionally.
 - **Every PID read off disk is checked against `/proc/<pid>/cmdline` before being signalled.**
   The runtime state file can be minutes stale after a crash and PIDs are recycled.
 - **A `Saver` clears the runtime state files only while the PID file still names it.** On a

@@ -135,8 +135,9 @@ export DISPLAY="${DISPLAY:-:0}"
 pid=""
 log="$(mktemp)"
 
-# Stop only the module this script started. Never `retrosaver stop`: it hands
-# idle-delay back to GNOME, which would break a daemon that still owns it.
+# Stop only the module this script started. Never `retrosaver stop`: it stops
+# every running module, not just this one, and releases before stop learned to
+# check for a daemon also hand idle-delay back to GNOME under one that owns it.
 stop_module() {
     if [ -n "$pid" ]; then
         kill "$pid" 2>/dev/null || true

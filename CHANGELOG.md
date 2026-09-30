@@ -20,6 +20,11 @@ All notable changes to this project are documented here. The format follows
   alone when a daemon is running; with no daemon, including the unit's own
   `ExecStopPost`, it restores as before.
 
+### Maintenance
+
+- Stop publishing the private development container configuration (`.devcontainer/`) to
+  the GitHub mirror. Nothing that builds, tests or packages retrosaver used it.
+
 ## [0.2.3] - 2026-09-14
 
 ### Fixed
@@ -31,11 +36,24 @@ All notable changes to this project are documented here. The format follows
   the running module and would start a second one over it. The daemon's own teardown was
   unaffected. A module now removes the state files only while they still name it.
 
+### Added
+
+- `scripts/demo.sh` previews display modules one after another in an ordinary window,
+  printing each module's name and description before it starts. It holds a GNOME idle
+  inhibitor while it runs, so the daemon cannot start a fullscreen module over the demo or
+  lock the session.
+
+### Maintenance
+
+- Update module golang.org/x/vuln to v1.8.0
+
 ## [0.2.2] - 2026-09-08
 
 ### Fixed
 
-- Update module golang.org/x/sys to v0.48.0
+- Update module golang.org/x/sys to v0.48.0. It declares `go 1.26.0`, so building from
+  source now needs Go 1.26 or newer. With the default `GOTOOLCHAIN=auto` such a Go fetches
+  and builds with the toolchain `go.mod` names (go1.27.1).
 
 ## [0.2.1] - 2026-09-08
 
@@ -63,11 +81,22 @@ All notable changes to this project are documented here. The format follows
   selectable module has been shown the set starts over, and if only one module is
   selectable nothing switches.
 
+### Fixed
+
+- A daemon that started on a session that had already been idle past several switch
+  intervals no longer walks the whole missed series back-to-back, launching one module
+  after another as fast as they could start. Intervals already idled through are skipped.
+
+### Maintenance
+
+- Update module golang.org/x/sys to v0.47.0
+
 ## [0.1.1] - 2026-09-02
 
 ### Fixed
 
-- Update module golang.org/x/sys to v0.44.0 [security]
+- Update module golang.org/x/sys to v0.44.0 [security]. It declares `go 1.25.0`, so
+  building from source now needs Go 1.25 or newer.
 - Map the bot identities in the mirror's mailmap
 - Stop the ref normalisation failing when there is nothing to drop
 
@@ -83,7 +112,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- Publish .debs to Forgejo's Debian registry as an apt repo
+- Publish .debs to an upstream apt repository. Public releases ship the `.deb` files as
+  release assets instead.
 
 ### Fixed
 
@@ -172,13 +202,13 @@ First release.
   xscreensaver 6.11+ works there natively.
 
 [Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.2.3...HEAD
-[0.2.3]: https://github.com/c-premus/retrosaver/releases/tag/v0.2.3
-[0.2.2]: https://github.com/c-premus/retrosaver/releases/tag/v0.2.2
-[0.2.1]: https://github.com/c-premus/retrosaver/releases/tag/v0.2.1
-[0.2.0]: https://github.com/c-premus/retrosaver/releases/tag/v0.2.0
-[0.1.1]: https://github.com/c-premus/retrosaver/releases/tag/v0.1.1
-[0.1.0]: https://github.com/c-premus/retrosaver/releases/tag/v0.1.0
-[0.0.4]: https://github.com/c-premus/retrosaver/releases/tag/v0.0.4
-[0.0.3]: https://github.com/c-premus/retrosaver/releases/tag/v0.0.3
-[0.0.2]: https://github.com/c-premus/retrosaver/releases/tag/v0.0.2
+[0.2.3]: https://github.com/c-premus/retrosaver/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/c-premus/retrosaver/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/c-premus/retrosaver/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/c-premus/retrosaver/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/c-premus/retrosaver/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/c-premus/retrosaver/compare/v0.0.4...v0.1.0
+[0.0.4]: https://github.com/c-premus/retrosaver/compare/v0.0.3...v0.0.4
+[0.0.3]: https://github.com/c-premus/retrosaver/compare/v0.0.2...v0.0.3
+[0.0.2]: https://github.com/c-premus/retrosaver/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/c-premus/retrosaver/releases/tag/v0.0.1

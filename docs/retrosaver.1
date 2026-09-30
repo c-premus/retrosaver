@@ -39,9 +39,14 @@ GPU and keeping the display awake. The lock and blank stages still run.
 .BR "loginctl lock\-session" .
 .TP
 .B Blank
-22 minutes idle by default. Power the display off, by handing
+22 minutes idle by default. Power the display off by setting
 .B idle\-delay
-back to gnome\-shell rather than poking DPMS behind the compositor's back.
+to 10 seconds, already less than the time the session has been idle, so gnome\-shell
+blanks on its next tick. The daemon never pokes DPMS behind the compositor's back.
+On user activity
+.B idle\-delay
+goes back to
+.BR 0 .
 .SH COMMANDS
 .SS Runtime
 .TP
@@ -56,35 +61,102 @@ below.
 .BI run " [module]"
 Launch one module fullscreen. Picks at random when
 .I module
-is omitted. Refuses to stack a second module over a running one.
+is omitted. Refuses to stack a second module over a running one. A module named
+explicitly is run even if
+.B EXCLUDE
+lists it.
 .TP
-.B stop
+.BR stop " [" \-\-keep\-idle\-delay ]
 Tear down a running module and clear the runtime state. Safe at any time, and a clean
-no\-op when nothing is running.
+no\-op when nothing is running. Then restore the
+.B idle\-delay
+saved at
+.BR setup ,
+unless a
+.B retrosaver daemon
+process is still running: the daemon owns
+.B idle\-delay
+while it runs, so handing it back to GNOME would let gnome\-shell blank the screen out
+from under the screensaver. The unit's
+.B ExecStopPost
+runs after the daemon has exited, so it still restores. If the process list cannot be
+read, the value is restored.
+.RS
+.TP
+.B \-\-keep\-idle\-delay
+Never restore
+.BR idle\-delay ,
+even when no daemon is running.
+.RE
 .TP
 .B list
 Print the discovered, selectable modules, one per line.
 .SS Installation
 .TP
 .B setup
-Run the preflight checks, write a config if none exists, enable the systemd user unit, and
-take ownership of
+Run the preflight checks, write a config if none exists (an existing one is never
+overwritten), enable the systemd user unit, and take ownership of
 .BR idle\-delay ,
-saving the original value first.
+saving the original value first. The preflight refuses to continue unless:
+.RS
+.IP \(bu 2
+.B XDG_SESSION_TYPE
+is
+.B wayland
+and
+.B XDG_CURRENT_DESKTOP
+contains
+.BR GNOME ;
+.IP \(bu 2
+.B DISPLAY
+is set, so XWayland is reachable;
+.IP \(bu 2
+.B org.gnome.Mutter.IdleMonitor
+answers on the session bus;
+.IP \(bu 2
+.BR wmctrl ,
+.B xdotool
+and
+.B unclutter\-xfixes
+(or
+.BR unclutter )
+are on
+.BR PATH ;
+.IP \(bu 2
+the configuration parses and leaves at least one module to pick;
+.IP \(bu 2
+.I /usr/lib/systemd/user/retrosaver.service
+exists. A source build has no unit to enable, so
+.B setup
+needs the installed package.
+.RE
 .TP
 .B teardown
 Reverse
 .BR setup :
-disable the unit and restore the saved
-.BR idle\-delay .
+disable and stop the unit, stop any running module, restore the saved
+.BR idle\-delay ,
+and delete the saved copy. The configuration file is kept.
 .SS Other
 .TP
-.B version
+.BR version ", " \-\-version ", " \-v
 Print the version and exit.
+.TP
+.BR help ", " \-\-help ", " \-h
+Print a usage summary and exit.
+.PP
+With no command, or an unknown one,
+.B retrosaver
+prints the usage summary to standard error and exits non\-zero.
 .SH CONFIGURATION
 .B retrosaver
 reads
-.IR ~/.config/retrosaver/retrosaver.conf .
+.IR $XDG_CONFIG_HOME/retrosaver/retrosaver.conf ,
+which is
+.I ~/.config/retrosaver/retrosaver.conf
+unless
+.B XDG_CONFIG_HOME
+is set.
 The file is shell\-shaped
 .IR KEY=value ,
 but it is
@@ -124,14 +196,24 @@ assets, network access, or elevated capabilities and misbehave standalone.
 .B INCLUDE
 Optional. If non\-empty, pick only from this space\-separated list.
 .PP
+Durations are whole, non\-negative seconds. Unknown keys are ignored.
+.PP
 Changes take effect as soon as the file is saved: the daemon watches it with inotify and
 re-arms itself.
 .B "systemctl \-\-user reload retrosaver"
-does the same on demand. A reload behaves like user activity \(em any module on screen is
-torn down and the stages re-arm from zero. A configuration that fails to parse is
+does the same on demand. When the settings have actually changed, a reload behaves like
+user activity \(em any module on screen is torn down and the stages re-arm from zero.
+Saving the file without changing a setting does nothing. A configuration that fails to
+parse is
 .B not
 applied: the error is logged and the daemon keeps the settings it already had, because
-exiting would leave the session with no screensaver and no auto\-lock.
+exiting would leave the session with no screensaver and no auto\-lock. If the file is
+already broken when the daemon starts, it runs on the built\-in defaults;
+.BR run ,
+.B list
+and
+.B setup
+refuse to run until it is fixed.
 .PP
 Modules are discovered by intersecting the basenames of
 .I /usr/share/xscreensaver/config/*.xml
@@ -140,10 +222,10 @@ with the executables in
 so helper binaries are never selected and the list follows the installed packages.
 .SH FILES
 .TP
-.I ~/.config/retrosaver/retrosaver.conf
+.I $XDG_CONFIG_HOME/retrosaver/retrosaver.conf
 User configuration.
 .TP
-.I ~/.config/retrosaver/idle\-delay.orig
+.I $XDG_CONFIG_HOME/retrosaver/idle\-delay.orig
 The
 .B idle\-delay
 value saved at
@@ -165,6 +247,54 @@ unit needs the user's own session bus.
 PID of the running module. Every PID read back is checked against
 .I /proc/<pid>/cmdline
 before being signalled, because the file can be stale after a crash and PIDs are recycled.
+.TP
+.I $XDG_RUNTIME_DIR/retrosaver.module
+Name of the running module.
+.TP
+.I $XDG_RUNTIME_DIR/retrosaver.unclutter.pid
+PID of the pointer\-hiding
+.B unclutter\-xfixes
+process started with the module.
+.PP
+A module removes these runtime files only while they still name it, so switching
+modules never erases the replacement's state.
+.SH ENVIRONMENT
+.TP
+.B RETROSAVER_LOG_LEVEL
+The daemon's log level:
+.BR debug ,
+.BR info
+(the default),
+.BR warn
+or
+.BR error .
+An unreadable value is logged and ignored. Set it in the unit with
+.BR "systemctl \-\-user edit retrosaver" ,
+adding
+.B Environment=RETROSAVER_LOG_LEVEL=debug
+under
+.BR [Service] .
+.TP
+.B XDG_CONFIG_HOME
+Where the configuration and the saved
+.B idle\-delay
+live. Defaults to
+.IR ~/.config .
+.TP
+.B XDG_RUNTIME_DIR
+Where the runtime state files live. Defaults to
+.IR /run/user/<uid> .
+.TP
+.B XDG_SESSION_ID
+The login session to lock, and whose lock state is checked before the saver stage
+starts. When unset, the user's display session as logind reports it.
+.TP
+.BR XDG_SESSION_TYPE ", " XDG_CURRENT_DESKTOP ", " DISPLAY
+Checked by the
+.B setup
+preflight, and
+.B DISPLAY
+is how display modules reach XWayland.
 .SH CAVEATS
 .SS This is not a screen locker
 A display module is an ordinary X11 window and cannot secure the session; X11 grabs do not
@@ -214,10 +344,13 @@ Every state transition logs to standard error, so
 .B journalctl \-\-user \-u retrosaver
 reads as a clear trace.
 .SH SEE ALSO
-.BR xscreensaver (1),
 .BR loginctl (1),
 .BR gsettings (1),
-.BR systemd.unit (5)
+.BR systemctl (1),
+.BR journalctl (1),
+.BR systemd.unit (5),
+and the display modules' own pages in section 6x, such as
+.BR atlantis (6x).
 .PP
 Project home: https://github.com/c-premus/retrosaver
 .SH AUTHOR

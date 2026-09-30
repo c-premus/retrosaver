@@ -1,5 +1,12 @@
 # retrosaver
 
+[![CI](https://github.com/c-premus/retrosaver/actions/workflows/ci.yaml/badge.svg)](https://github.com/c-premus/retrosaver/actions/workflows/ci.yaml)
+[![Release](https://img.shields.io/github/v/release/c-premus/retrosaver?sort=semver)](https://github.com/c-premus/retrosaver/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/c-premus/retrosaver/total)](https://github.com/c-premus/retrosaver/releases)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/c-premus/retrosaver)](https://go.dev/)
+[![Platform](https://img.shields.io/badge/platform-GNOME%20%7C%20Wayland-4a86cf)](#why-this-exists)
+[![License](https://img.shields.io/github/license/c-premus/retrosaver)](LICENSE)
+
 Retro screensavers for GNOME on Wayland.
 
 `retrosaver` brings back late-1990s and early-2000s XScreenSaver display modules — fractals,
@@ -12,9 +19,10 @@ trigger and a fullscreen wrapper. `retrosaver` is glue. All the actual artwork b
 XScreenSaver.
 
 > **Status: implemented and verified on the reference host.** All the pieces are written
-> and unit-tested, and **all six steps** of the manual verification procedure pass against a
-> live GNOME 50.1 session — idle detection, session control, the fullscreen wrapper, the
-> full saver → lock → blank → teardown sequence, and reboot persistence.
+> and unit-tested, and **all seven steps** of the manual verification procedure pass
+> against a live GNOME 50.1 session — idle detection, session control, the fullscreen
+> wrapper, the full saver → lock → blank → teardown sequence, no module behind a manual
+> Super+L lock, and reboot persistence.
 
 ## Why this exists
 
@@ -75,7 +83,8 @@ sudo apt install ./retrosaver_<version>_amd64.deb
 retrosaver setup
 ```
 
-`apt` pulls the XScreenSaver module packages as dependencies. The package also declares
+`apt` pulls the XScreenSaver module packages as dependencies, along with `wmctrl`,
+`xdotool` and `unclutter-xfixes`, which the fullscreen wrapper uses. The package also declares
 `Conflicts: xscreensaver`, because the daemon is the broken component and would otherwise
 autostart and emit errors alongside this one.
 
@@ -87,8 +96,9 @@ Upgrading is the same command against a newer `.deb` — `retrosaver setup` does
 re-running, and the package restarts the daemon for you so the new binary actually takes
 effect.
 
-> Packages built before 0.0.3 did not do that. If you are upgrading from 0.0.1 or 0.0.2,
-> the old daemon keeps running until you restart it once:
+> The restart needs systemd 249.10 or 250 or newer to reach your user session. On an
+> older systemd the package skips it quietly and the old daemon keeps running until you
+> restart it once:
 >
 > ```bash
 > systemctl --user daemon-reload
@@ -108,12 +118,13 @@ sudo apt remove retrosaver
 
 ## Configuration
 
-`~/.config/retrosaver/retrosaver.conf`, created by `retrosaver setup` and never overwritten:
+`~/.config/retrosaver/retrosaver.conf` is created by `retrosaver setup` and never
+overwritten. It is a commented copy of these defaults:
 
 ```sh
 SAVER_DELAY=300     # idle seconds before the screensaver starts
 CYCLE_AFTER=300     # seconds each module lasts before switching to another. 0 disables
-LOCK_AFTER=900      # seconds after the saver starts before locking. 0 disables
+LOCK_AFTER=900      # seconds after the saver starts before locking. 0 disables locking and blanking
 BLANK_AFTER=120     # seconds after locking before the display powers off. 0 disables
 
 # Modules never to pick: these need image assets, network access, or elevated
@@ -124,27 +135,39 @@ EXCLUDE="webcollage vidwhacker glslideshow photopile carousel sonar"
 INCLUDE=""
 ```
 
+Values are whole seconds, and unknown keys are ignored. The file is parsed as
+`KEY=value` lines and never run as a shell script.
+
 Changes take effect as soon as you save the file: the daemon watches it and re-arms
 itself. `systemctl --user reload retrosaver` does the same thing on demand, and neither
 drops the D-Bus connection or the ownership of `idle-delay` the way a restart briefly does.
 
 Two things worth knowing about a reload:
 
-- **It behaves like user activity.** Any module on screen is torn down and the stages
-  re-arm from zero, so the new timings are counted from the moment you save.
+- **It behaves like user activity** when a setting has actually changed. Any module on
+  screen is torn down and the stages re-arm from zero, so the new timings are counted from
+  the moment you save. Saving without changing anything does nothing.
 - **A broken config is ignored.** If the file will not parse, the error is logged and the
   daemon carries on with the settings it already had, rather than exiting and taking your
-  auto-lock with it.
+  auto-lock with it. A daemon that *starts* on a broken file uses the built-in defaults,
+  and `run`, `list` and `setup` refuse to run until it is fixed.
 
 Useful commands:
 
 ```bash
 retrosaver list              # print the modules that would be picked from
-retrosaver run atlantis      # launch one module now
+retrosaver run atlantis      # launch one module now, even one EXCLUDE lists
 retrosaver stop              # tear it down
 systemctl --user reload retrosaver   # re-read the config now
 journalctl --user -u retrosaver -f
 ```
+
+`retrosaver stop` also gives `idle-delay` back to GNOME, but only when the daemon is not
+running. While it runs the daemon owns that setting, so stopping a module you started by
+hand leaves it alone.
+
+For more detail in the journal, set `Environment=RETROSAVER_LOG_LEVEL=debug` under
+`[Service]` with `systemctl --user edit retrosaver`, then restart the unit.
 
 ## The `idle-delay 0` tradeoff
 
@@ -194,10 +217,13 @@ Security policy, and a note on why this is not a screen locker, are in
 [`SECURITY.md`](SECURITY.md).
 
 ```bash
-go build ./...
+go build -o retrosaver ./cmd/retrosaver
 go test ./...
 gofmt -l .
 ```
+
+A source build can run modules and the daemon, but `retrosaver setup` needs the installed
+`.deb`: it enables the packaged systemd unit, and refuses when that unit is missing.
 
 ## Credits
 

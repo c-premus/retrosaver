@@ -11,10 +11,11 @@ scrubbed, published mirror of it.
 
 Two consequences worth knowing before you start:
 
-- **`main` here is force-pushed.** Published history is produced by rewriting the upstream
-  history on every sync, so commit SHAs are stable in practice but not guaranteed across a
-  change to the publishing rules. If a `git pull` ever refuses to fast-forward, re-clone
-  rather than trying to merge.
+- **Published history comes from a rewrite.** Each sync rewrites the upstream history to
+  produce what you see here. The publishing rules are kept stable so that `main` only ever
+  fast-forwards and existing SHAs do not move. If a `git pull` ever refuses to
+  fast-forward, that promise has been broken: open an issue, and rebase your work onto the
+  new `main`.
 - **Pull requests opened here are read and applied upstream**, then flow back on the next
   sync. Your commits keep their authorship, but the merge commit you see on GitHub will not
   be the one that lands. This is unusual; it is not a comment on the contribution.
@@ -35,9 +36,16 @@ gofmt -l .             # must print nothing
 go mod tidy -diff
 go vet ./...
 go test -race ./...
-go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./...
+GOTOOLCHAIN=go1.26.0 go build ./... && GOTOOLCHAIN=go1.26.0 go test ./...  # the Go floor
+go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 shellcheck $(git ls-files '*.sh')
 ```
+
+The tool versions above are pinned in
+[`.github/workflows/ci.yaml`](.github/workflows/ci.yaml). If the two ever disagree, the
+workflow is right.
 
 ## What CI cannot tell you
 
@@ -81,9 +89,9 @@ These are design boundaries, not preferences. Each is explained at length in
 
 ## Commits
 
-Conventional commits (`feat:`, `fix:`, `chore:`, `docs:`, `ci:`, `test:`). The release
-tooling reads them to work out version bumps, and only `feat`, `fix`, `chore` and BREAKING
-reach the changelog.
+Conventional commits (`feat:`, `fix:`, `chore:`, `docs:`, `ci:`, `test:`, `refactor:`,
+`perf:`, `style:`). The upstream release tooling reads them to work out version bumps, and
+only `feat`, `fix`, `chore` and BREAKING reach the changelog.
 
 ## Licence
 
