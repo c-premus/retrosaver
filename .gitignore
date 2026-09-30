@@ -7,14 +7,9 @@
 .codex/*.local.toml
 .codex/command-history.log
 
-# Local secrets (e.g. OPENROUTER_API_KEY for .codex/codex-openrouter.sh)
+# Local secrets
 .env
 .env.local
-
-# Committed on purpose (do not ignore):
-#   .claude/settings.json  .claude/skills/  .claude/agents/  .claude/scripts/  .claude/hooks/*.example
-#   .codex/config.toml  .codex/skills/  .codex/agents/  .codex/hooks/
-#   AGENTS.md  CLAUDE.md  memory-bank/
 
 # Go build artifacts
 /dist/

@@ -12,13 +12,14 @@ module github.com/c-premus/retrosaver
 // requires a module's directive to be at least its dependencies', and
 // golang.org/x/sys keeps raising its own. x/sys owns this number now:
 //
-//	x/sys v0.44.0  declares go 1.25.0  ->  floor 1.24 -> 1.25.0  (ae86a88)
+//	x/sys v0.44.0  declares go 1.25.0  ->  floor 1.24 -> 1.25.0  (a security update)
 //	x/sys v0.48.0  declares go 1.26.0  ->  floor 1.25.0 -> 1.26.0
 //
-// Neither raise was decided by anyone. postUpdateOptions ['gomodTidy'] in
-// renovate.json performs them, the first as a side effect of a SECURITY bump.
-// renovate.json's rule barring the `golang` depType stops Renovate PROPOSING a
-// raise; it cannot stop `go mod tidy` performing one. Refusing would mean
+// Neither raise was decided by anyone. The upstream Renovate configuration runs
+// `go mod tidy` after every update (postUpdateOptions ['gomodTidy']), and that
+// performed them, the first as a side effect of a SECURITY bump. Its rule
+// barring the `golang` depType stops Renovate PROPOSING a raise; it cannot stop
+// `go mod tidy` performing one. Refusing would mean
 // pinning x/sys below its security fixes, which is the worse trade -- so the
 // policy is to accept the raise and make it visible, not to fight it.
 //
@@ -27,9 +28,9 @@ module github.com/c-premus/retrosaver
 // a floor-versus-toolchain comparison -- that stays green through exactly this
 // failure (1.25.0 <= 1.27.1 held throughout) and catches nothing.
 //
-// Four files carry this number and must move in one commit: this line, GO_FLOOR
-// in BOTH ci.yaml files, docs/development.md's "Code standards", and
-// renovate.json's `golang` depType rule.
+// Four places carry this number and must move in one commit: this line, the
+// GO_FLOOR pin in CI (and its upstream counterpart), docs/development.md's
+// "Code standards", and the upstream Renovate rule barring the `golang` depType.
 go 1.26.0
 
 // What CI actually builds with. Bump this freely; bump the

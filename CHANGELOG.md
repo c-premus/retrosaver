@@ -22,8 +22,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Maintenance
 
-- Stop publishing the private development container configuration (`.devcontainer/`) to
-  the GitHub mirror. Nothing that builds, tests or packages retrosaver used it.
+- Stop publishing the author's private development container configuration to the GitHub
+  mirror. Nothing that builds, tests or packages retrosaver used it.
 
 ## [0.2.3] - 2026-09-14
 

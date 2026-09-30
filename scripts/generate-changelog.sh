@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 # generate-changelog.sh — render one release's changelog section from git history.
 #
-# Adapted from the same script in chris/mcp-gate, with two deliberate
-# differences:
+# Adapted from a sibling project's script, with two deliberate differences:
 #
 #   1. It emits ONE version's section rather than regenerating the whole file.
 #      retrosaver's released entries carry hand-written prose that no commit
 #      subject holds -- the 0.0.1 "Known limitations" notes, for instance --
 #      and a full regeneration would replace that with terse bullets. The
-#      workflow splices the new section in and leaves history alone.
+#      release process splices the new section in and leaves history alone.
 #   2. It can emit the goreleaser/chglog YAML that nfpm turns into
-#      changelog.Debian.gz, so CHANGELOG.md and changelog.yaml are generated
-#      from the same commits and cannot drift apart.
+#      changelog.Debian.gz, so a release seeds CHANGELOG.md and changelog.yaml
+#      from the same commits. Both are hand-edited afterwards, so they can
+#      still drift; keep them in step by hand.
 #
-# Conventions, matching mcp-gate:
+# Conventions:
 #   - Only feat, fix, chore and BREAKING reach the changelog. ci/test/refactor/
 #     docs/style/perf are end-user noise; promote anything that matters to a
 #     fix: or chore:. This is why `docs: prepare the v0.0.2 release` and the
-#     memory-bank bookkeeping commits stay out.
+#     internal bookkeeping commits stay out.
 #   - BREAKING is detected from `!:` after the type or `BREAKING CHANGE` in the
 #     body.
 #

@@ -23,9 +23,9 @@ env:
   # below, and the floor build below runs GOTOOLCHAIN=go$GO_FLOOR, so the pin is
   # executed rather than merely compared.
   #
-  # Four files carry this number and must move in one commit: go.mod, this pin
-  # (in BOTH ci.yaml files), docs/development.md's "Code standards", and the
-  # renovate.json rule barring the `golang` depType.
+  # Four places carry this number and must move in one commit: go.mod, this pin
+  # (and its upstream counterpart), docs/development.md's "Code standards", and
+  # the upstream Renovate rule barring the `golang` depType.
   GO_FLOOR: "1.26.0"
 
 concurrency:
@@ -72,7 +72,7 @@ jobs:
             exit 1
           fi
           if [ "$FLOOR" != "$GO_FLOOR" ]; then
-            echo "::error::go.mod's language floor is 'go $FLOOR' but this workflow pins GO_FLOOR=$GO_FLOOR. If a dependency raised it transitively (go mod tidy does this silently), decide whether to accept the raise -- then move go.mod, BOTH ci.yaml pins, docs/development.md and renovate.json's golang-depType rule together." >&2
+            echo "::error::go.mod's language floor is 'go $FLOOR' but this workflow pins GO_FLOOR=$GO_FLOOR. If a dependency raised it transitively (go mod tidy does this silently), decide whether to accept the raise -- then move go.mod, this pin and docs/development.md together." >&2
             exit 1
           fi
           if [ "$(printf '%s\n%s\n' "$FLOOR" "$TOOLCHAIN" | sort -V | head -1)" != "$FLOOR" ]; then
@@ -166,7 +166,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y shellcheck
-          # git ls-files, not a hardcoded list: a fourth script must not be
+          # git ls-files, not a hardcoded list: a new script must not be
           # able to ship unchecked just because nobody updated this line.
           mapfile -t scripts < <(git ls-files '*.sh')
           printf 'checking %s\n' "${scripts[@]}"

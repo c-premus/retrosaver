@@ -18,7 +18,7 @@ permissions:
   id-token: write
   attestations: write
 
-# Per-tag, not global. sync-github.yaml force-pushes every tag on every run,
+# Per-tag, not global. The upstream mirror sync force-pushes every tag on every run,
 # and a change to its redaction rules moves every SHA at once -- which GitHub
 # sees as N updated tags and fires N release runs. Grouping per tag keeps each
 # one serialized against a re-run of itself without having them cancel each
@@ -120,7 +120,7 @@ jobs:
 
       # Idempotent by construction. A run can legitimately be the second for one
       # tag: a workflow_dispatch re-run after a partial failure, or a tag that
-      # sync-github.yaml force-updated. Creating a release that already exists
+      # the upstream mirror sync force-updated. Creating a release that already exists
       # is an error, so reuse it; --clobber replaces an asset rather than
       # failing or attaching a second copy under the same name.
       - name: Create release and attach assets
