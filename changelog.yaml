@@ -6,6 +6,14 @@
 #
 # Keep each `note` on a SINGLE line. chglog renders every subsequent line of a note as a
 # "-" sub-bullet, which makes a wrapped sentence look like a broken list.
+- semver: 0.2.4
+  date: 2026-09-30T00:00:00Z
+  packager: Chris <63758245+c-premus@users.noreply.github.com>
+  changes:
+    - note: "Leave idle-delay alone when stop runs beside the daemon"
+    - note: "Remove pointers the public mirror cannot follow"
+    - note: "Stop publishing .devcontainer/ without rewriting history"
+
 - semver: 0.2.3
   date: 2026-09-14T00:00:00Z
   packager: Chris <63758245+c-premus@users.noreply.github.com>
