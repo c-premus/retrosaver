@@ -8,6 +8,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -302,5 +304,76 @@ func TestInstallConfigFallsBackToTheCompiledDefaults(t *testing.T) {
 	}
 	if string(b) != defaultConfigFile() {
 		t.Error("installConfig did not fall back to the compiled-in defaults")
+	}
+}
+
+// fakeProc builds a /proc-shaped tree: one directory per PID holding a
+// NUL-separated cmdline, written exactly as the kernel does.
+func fakeProc(t *testing.T, procs map[string][]string) string {
+	t.Helper()
+	root := t.TempDir()
+	for pid, argv := range procs {
+		dir := filepath.Join(root, pid)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if argv == nil {
+			continue // a process that exited between readdir and read
+		}
+		cmdline := strings.Join(argv, "\x00") + "\x00"
+		if err := os.WriteFile(filepath.Join(dir, "cmdline"), []byte(cmdline), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// A manual `retrosaver stop` beside a running daemon must not hand idle-delay
+// back to GNOME, and must still restore it when no daemon is left to own it.
+func TestDaemonRunning(t *testing.T) {
+	self := strconv.Itoa(os.Getpid())
+	tests := []struct {
+		name  string
+		procs map[string][]string
+		want  bool
+	}{
+		{"the installed unit", map[string][]string{
+			"1":    {"/usr/lib/systemd/systemd", "--user"},
+			"4242": {"/usr/bin/retrosaver", "daemon"},
+		}, true},
+		{"a source build under systemd-run", map[string][]string{
+			"4242": {"/home/u/src/retrosaver/retrosaver", "daemon"},
+		}, true},
+		{"only a manually run module", map[string][]string{
+			"4242": {"/usr/bin/retrosaver", "run", "atlantis"},
+			"4243": {"/usr/libexec/xscreensaver/atlantis", "-root"},
+		}, false},
+		{"another program called with daemon", map[string][]string{
+			"4242": {"/usr/bin/retrosaver-helper", "daemon"},
+		}, false},
+		{"this process is ignored", map[string][]string{
+			self: {"/usr/bin/retrosaver", "daemon"},
+		}, false},
+		{"an unreadable cmdline", map[string][]string{
+			"4242": nil,
+		}, false},
+		{"non-PID entries are skipped", map[string][]string{
+			"self": {"/usr/bin/retrosaver", "daemon"},
+		}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := daemonRunning(fakeProc(t, tt.procs)); got != tt.want {
+				t.Errorf("daemonRunning = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// An unreadable proc root must read as "no daemon", so stop falls back to
+// restoring idle-delay rather than leaving the session with no auto-lock.
+func TestDaemonRunningFailsTowardRestoring(t *testing.T) {
+	if daemonRunning(filepath.Join(t.TempDir(), "missing")) {
+		t.Error("daemonRunning on a missing proc root = true, want false")
 	}
 }

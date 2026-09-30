@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -327,7 +328,7 @@ func cmdRun(args []string) error {
 func cmdStop(args []string) error {
 	fset := flag.NewFlagSet("stop", flag.ExitOnError)
 	keepIdleDelay := fset.Bool("keep-idle-delay", false,
-		"do not restore idle-delay (used by the daemon between stages)")
+		"do not restore idle-delay, even when no daemon is running")
 	// flag.ExitOnError: Parse exits the process on a bad flag, so it never
 	// returns a non-nil error here and checking one is dead code.
 	_ = fset.Parse(args)
@@ -340,7 +341,57 @@ func cmdStop(args []string) error {
 	if *keepIdleDelay {
 		return nil
 	}
+	// A running daemon still owns idle-delay. Restoring it here would hand
+	// blanking back to gnome-shell while the daemon believes it holds 0, which
+	// breaks the screensaver silently. ExecStopPost runs after the daemon has
+	// exited, so the unit's own cleanup still restores.
+	if daemonRunning("/proc") {
+		fmt.Fprintln(os.Stderr,
+			"retrosaver: the daemon is running and still owns idle-delay; leaving it alone")
+		return nil
+	}
 	return session.RestoreIdleDelay()
+}
+
+// daemonRunning reports whether a `retrosaver daemon` process other than this
+// one is alive, by reading each process's cmdline under procRoot. Anything
+// unreadable counts as "no daemon", so a failure here falls back to restoring
+// idle-delay: leaving it at 0 with no daemon running would mean no auto-lock
+// at all, which is worse than the blanking this check exists to protect.
+func daemonRunning(procRoot string) bool {
+	entries, err := os.ReadDir(procRoot)
+	if err != nil {
+		return false
+	}
+	self := strconv.Itoa(os.Getpid())
+	for _, e := range entries {
+		name := e.Name()
+		if name == self || !isDigits(name) {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(procRoot, name, "cmdline"))
+		if err != nil {
+			continue
+		}
+		// /proc cmdline is NUL-separated, with a trailing NUL.
+		argv := strings.Split(strings.TrimRight(string(b), "\x00"), "\x00")
+		if len(argv) >= 2 && filepath.Base(argv[0]) == "retrosaver" && argv[1] == "daemon" {
+			return true
+		}
+	}
+	return false
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func cmdList(args []string) error {

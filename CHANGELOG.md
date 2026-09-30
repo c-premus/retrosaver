@@ -11,6 +11,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `retrosaver stop` no longer hands `idle-delay` back to GNOME while the daemon is still
+  running. Stopping a module started by hand with `retrosaver run` used to restore the
+  saved value, so gnome-shell's own blanking came back underneath a daemon that still
+  believed it owned the idle policy, until its next reset. `stop` now leaves `idle-delay`
+  alone when a daemon is running; with no daemon, including the unit's own
+  `ExecStopPost`, it restores as before.
+
 ## [0.2.3] - 2026-09-14
 
 ### Fixed
