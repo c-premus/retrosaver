@@ -126,17 +126,23 @@ jobs:
       - name: Create release and attach assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -o errexit -o nounset -o pipefail
           TAG="${GITHUB_REF#refs/tags/}"
 
+          # The body is the version's CHANGELOG.md section plus install
+          # instructions, from the same script the upstream release uses.
+          scripts/release-notes.sh "$TAG" > "$RUNNER_TEMP/notes.md"
+
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release ${TAG} already exists; reusing it."
+            # Refresh the notes too, so a re-run also repairs a release created
+            # before they came from the changelog.
+            gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
           else
             gh release create "$TAG" \
               --title "$TAG" \
-              --notes "Install: download the .deb for your architecture, then \`sudo apt install ./retrosaver_${VERSION}_amd64.deb\` and run \`retrosaver setup\`."
+              --notes-file "$RUNNER_TEMP/notes.md"
             echo "Created release ${TAG}"
           fi
 
