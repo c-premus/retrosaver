@@ -174,6 +174,12 @@ type fakeLauncher struct {
 	names    []string // handed out in order; the last repeats
 	failures map[string]error
 	release  chan struct{} // when non-nil, Launch waits on it
+	// holdFor holds the launch of one named module until its channel closes,
+	// leaving every other launch to run straight through. It is what lets a
+	// test observe the state between a failed launch and its retry: with
+	// both failing at once, the daemon handles the second before the test
+	// can look.
+	holdFor map[string]chan struct{}
 	// ignoreCancel models a launch that has already got far enough that
 	// cancelling it cannot un-map the window: it returns a live saver even
 	// though the context is done. That is the case the generation counter
@@ -264,7 +270,12 @@ func (l *fakeLauncher) Launch(ctx context.Context, name string) (saver, error) {
 	release := l.release
 	ignoreCancel := l.ignoreCancel
 	err := l.failures[name]
+	hold := l.holdFor[name]
 	l.mu.Unlock()
+
+	if hold != nil {
+		<-hold
+	}
 
 	if release != nil {
 		if ignoreCancel {
@@ -2088,6 +2099,7 @@ func TestADeadModuleIsClosedOnlyOnceItsReplacementIsUp(t *testing.T) {
 // When no replacement comes, the dead module's windows must still close, or
 // the black screen this exists to fix is back.
 func TestAFailedRelaunchStillClosesTheDeadModule(t *testing.T) {
+	retry := make(chan struct{})
 	h := start(t, defaultConfig(), func(h *harness) {
 		h.lau.names = []string{"atlantis", "flame", "ifs"}
 		h.lau.honourAvoid = true
@@ -2095,6 +2107,7 @@ func TestAFailedRelaunchStillClosesTheDeadModule(t *testing.T) {
 			"flame": errors.New("no GL context"),
 			"ifs":   errors.New("no GL context"),
 		}
+		h.lau.holdFor = map[string]chan struct{}{"ifs": retry}
 	})
 
 	h.fire(wSaver, "watch:saver")
@@ -2103,9 +2116,11 @@ func TestAFailedRelaunchStillClosesTheDeadModule(t *testing.T) {
 	h.lau.saverAt(t, 0).die()
 	h.want("module:exited:atlantis")
 	h.want("launch:failed:flame")
+	// The retry is held, so this is the state between the two attempts.
 	if got := h.lau.saverAt(t, 0).stopCount(); got != 0 {
 		t.Fatalf("dead module stopped %d times with a retry on its way, want 0", got)
 	}
+	close(retry)
 	h.want("launch:failed:ifs")
 	if got := h.lau.saverAt(t, 0).stopCount(); got != 1 {
 		t.Errorf("dead module stopped %d times after both relaunches failed, want 1", got)
