@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 // Live tests against a real GNOME session. Gated on RETROSAVER_LIVE so that
@@ -93,4 +94,54 @@ func TestLiveLock(t *testing.T) {
 		t.Fatalf("Lock() = %v", err)
 	}
 	t.Log("Lock() returned; the session should now be showing GNOME's lock screen")
+}
+
+// TestLiveWatchLocksSubscribes proves the system bus subscription resolves the
+// graphical session and installs its match rule, without locking anything.
+func TestLiveWatchLocksSubscribes(t *testing.T) {
+	requireLive(t)
+
+	w, err := WatchLocks()
+	if err != nil {
+		t.Fatalf("WatchLocks() = %v", err)
+	}
+	t.Logf("watching %s", w.path)
+	if err := w.Close(); err != nil {
+		t.Errorf("Close() = %v", err)
+	}
+	if _, open := <-w.Changes(); open {
+		t.Error("Changes() still open after Close")
+	}
+}
+
+// TestLiveWatchLocksSeesALock locks the session for real and expects the
+// watcher to report it. Gated like TestLiveLock:
+//
+//	RETROSAVER_LIVE=1 RETROSAVER_LIVE_LOCK=1 go test ./internal/session -run LiveWatchLocksSeesALock -v
+func TestLiveWatchLocksSeesALock(t *testing.T) {
+	requireLive(t)
+	if os.Getenv("RETROSAVER_LIVE_LOCK") == "" {
+		t.Skip("set RETROSAVER_LIVE_LOCK=1 as well: this test locks the screen for real")
+	}
+
+	w, err := WatchLocks()
+	if err != nil {
+		t.Fatalf("WatchLocks() = %v", err)
+	}
+	defer w.Close()
+
+	if err := Lock(); err != nil {
+		t.Fatalf("Lock() = %v", err)
+	}
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case locked := <-w.Changes():
+			if locked {
+				return
+			}
+		case <-deadline:
+			t.Fatal("no LockedHint=true within 10s of locking")
+		}
+	}
 }

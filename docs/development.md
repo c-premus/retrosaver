@@ -45,7 +45,7 @@ internal/config/     KEY=value parser (never executes the file)
 internal/modules/    discovery: config XML basenames ∩ executables in libexec
 internal/idle/       org.gnome.Mutter.IdleMonitor D-Bus client
 internal/window/     saver windows (one per monitor, over X via xgb), module processes, unclutter
-internal/session/    loginctl lock-session, gsettings idle-delay
+internal/session/    loginctl lock-session, gsettings idle-delay, logind LockedHint watch
 internal/watch/      inotify watch on the config file, for live reload
 internal/daemon/     the state machine: five watch kinds, the cycle one self-re-arming
 ```
@@ -192,7 +192,7 @@ What cannot be automated, and how the tests that need a real session are kept ou
 - Standard library only wherever possible. There are **exactly three** direct dependencies,
   all pure Go, and that is what keeps `CGO_ENABLED=0` viable and the artifact genuinely
   static:
-  - `github.com/godbus/dbus/v5` — the session bus.
+  - `github.com/godbus/dbus/v5` — the session bus, and the system bus for logind.
   - `golang.org/x/sys` — the inotify syscalls, imported directly by `internal/watch`.
     This is not a slip. The stdlib `syscall` package is frozen and its own documentation
     points callers at `x/sys`, so removing it would trade an endorsed dependency for a
@@ -292,6 +292,16 @@ needs a matching rule**, or it silently rots.
   lock. `LockedHint` was correct in both cycles. It also lags the shield by about a second
   on the way in, which is harmless: the saver stage would have to come due inside that one
   second to be affected, and the cost is one idle period of the old behaviour.
+- **A lock that arrives with no user activity stops the module.** `loginctl lock-session`
+  over SSH, for one, locks without touching the idle clock, and GNOME leaves an X
+  client running behind its shield: measured on the reference host, the module was still
+  running 60 s into such a lock. `session.WatchLocks` subscribes to `PropertiesChanged` on
+  the graphical session's logind object (system bus, session named explicitly, like
+  `session.Locked`), and `onLockChange` stops the saver. It bumps `gen` first, so a launch
+  too far along to cancel is discarded rather than put up behind the shield. It leaves
+  `stage` alone, so lock and blank stay on schedule. **The subscription fails open**: if it
+  cannot be made, or the system bus drops, the daemon logs a warning and runs without it.
+  An unlock needs no handling, because unlocking is user activity.
 - **`session.Lock` may let logind pick the session; `session.Locked` may not.** A bare
   `loginctl lock-session` resolves to the user's display session, and locking an
   already-locked session is a no-op, so guessing is safe there. A bare
@@ -470,10 +480,13 @@ needs a matching rule**, or it silently rots.
   `Saver`'s `Done` closes on `Stop` as well as on death, so **every path that stops or
   replaces `current` must clear `currentDone` too**, or the daemon's own stop reads as a
   death. Missing it in `stopSaver` panics on the next select, which every lock test
-  catches. `onModuleExit` closes the dead windows itself rather than calling `stopSaver`,
-  because that would cancel a swap already in flight, and the swap landing is the best
-  outcome. `retrosaver stop` beside a running daemon is indistinguishable from a crash and
-  gets a replacement too; `maxRelaunches` bounds it.
+  catches. **The replacement goes up before the dead windows close**, the same order as a
+  swap, and that is measured: closing first and mapping straight after left the new window
+  unfullscreened at 2938×1590 on the reference host, while swaps never did. So the dead
+  module stays `current`, flagged `dead`, until `handleLaunch` retires it; every path that
+  ends with nothing on its way (capped, locked, retry exhausted, nothing to pick) calls
+  `closeDead`. `retrosaver stop` beside a running daemon is indistinguishable from a crash
+  and gets a replacement too; `maxRelaunches` bounds it.
 - **The PID file holds one PID per line, primary monitor first.** A single-line file from an
   older version reads the same way. A file with any line that is not a plausible PID is
   ignored whole rather than partly trusted. `clearStateFor` keys on the first PID.

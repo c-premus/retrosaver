@@ -386,6 +386,32 @@ func (s *fakeSession) lockedCount() int {
 	return s.lockedCalls
 }
 
+// fakeLockWatcher hands the daemon a channel the test drives directly.
+type fakeLockWatcher struct {
+	changes chan bool
+	mu      sync.Mutex
+	closed  bool
+}
+
+func newFakeLockWatcher() *fakeLockWatcher {
+	return &fakeLockWatcher{changes: make(chan bool, 1)}
+}
+
+func (w *fakeLockWatcher) Changes() <-chan bool { return w.changes }
+
+func (w *fakeLockWatcher) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.closed = true
+	return nil
+}
+
+func (w *fakeLockWatcher) isClosed() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.closed
+}
+
 // ---------------------------------------------------------------- harness
 
 type harness struct {
@@ -394,6 +420,7 @@ type harness struct {
 	mon   *fakeMonitor
 	lau   *fakeLauncher
 	sess  *fakeSession
+	locks *fakeLockWatcher
 	trace chan string
 
 	// reloadC drives the config-reload path; nextCfg is what the injected
@@ -450,6 +477,7 @@ func start(t *testing.T, cfg config.Config, tweak ...func(*harness)) *harness {
 		mon:   newFakeMonitor(),
 		lau:   &fakeLauncher{names: []string{"atlantis"}},
 		sess:  &fakeSession{},
+		locks: newFakeLockWatcher(),
 		trace: make(chan string, 64),
 		errc:  make(chan error, 1),
 
@@ -459,6 +487,7 @@ func start(t *testing.T, cfg config.Config, tweak ...func(*harness)) *harness {
 	h.d = New(cfg)
 
 	h.d.connect = func() (idleMonitor, error) { return h.mon, nil }
+	h.d.watchLocks = func() (lockWatcher, error) { return h.locks, nil }
 	h.d.modules = h.lau
 	h.d.session = h.sess
 	h.d.backstop = func() error { return nil }
@@ -527,6 +556,16 @@ func (h *harness) reloadFailing(err error) {
 	h.cfgMu.Unlock()
 	h.reloadC <- struct{}{}
 	h.want("reload:failed")
+}
+
+// lockChange delivers a lock-state change and waits for the daemon to finish
+// handling it. The fake session is updated first, as logind's property would
+// be by the time its signal arrives.
+func (h *harness) lockChange(locked bool, tag string) {
+	h.t.Helper()
+	h.sess.setLocked(locked)
+	h.locks.changes <- locked
+	h.want(tag)
 }
 
 // fire delivers a watch and waits for the daemon to finish handling it.
@@ -1301,6 +1340,7 @@ func TestAFailedArmAtStartupStillRestoresIdleDelay(t *testing.T) {
 		mon:     newFakeMonitor(),
 		lau:     &fakeLauncher{names: []string{"atlantis"}},
 		sess:    &fakeSession{},
+		locks:   newFakeLockWatcher(),
 		trace:   make(chan string, 64),
 		errc:    make(chan error, 1),
 		reloadC: make(chan struct{}, 1),
@@ -1309,6 +1349,7 @@ func TestAFailedArmAtStartupStillRestoresIdleDelay(t *testing.T) {
 	h.mon.setAddErr(sentinel)
 	h.d = New(defaultConfig())
 	h.d.connect = func() (idleMonitor, error) { return h.mon, nil }
+	h.d.watchLocks = func() (lockWatcher, error) { return h.locks, nil }
 	h.d.modules = h.lau
 	h.d.session = h.sess
 	h.d.backstop = func() error { return nil }
@@ -2011,5 +2052,205 @@ func TestADeathDuringASwapLetsTheSwapLand(t *testing.T) {
 	h.want("launch:ok:flame")
 	if got, want := h.lau.askedFor(), []string{"atlantis", "flame"}; !slices.Equal(got, want) {
 		t.Errorf("modules launched = %v, want %v", got, want)
+	}
+}
+
+// The dead module's windows stay up until the replacement's are, as on a swap.
+// Closing them first left Mutter mapping the replacement unfullscreened on the
+// reference host.
+func TestADeadModuleIsClosedOnlyOnceItsReplacementIsUp(t *testing.T) {
+	release := make(chan struct{})
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.lau.names = []string{"atlantis", "flame"}
+		h.lau.honourAvoid = true
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	h.lau.mu.Lock()
+	h.lau.release = release
+	h.lau.mu.Unlock()
+
+	h.lau.saverAt(t, 0).die()
+	h.want("module:exited:atlantis")
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 0 {
+		t.Fatalf("dead module stopped %d times before its replacement was up, want 0", got)
+	}
+
+	close(release)
+	h.want("launch:ok:flame")
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 1 {
+		t.Errorf("dead module stopped %d times after the replacement landed, want 1", got)
+	}
+}
+
+// When no replacement comes, the dead module's windows must still close, or
+// the black screen this exists to fix is back.
+func TestAFailedRelaunchStillClosesTheDeadModule(t *testing.T) {
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.lau.names = []string{"atlantis", "flame", "ifs"}
+		h.lau.honourAvoid = true
+		h.lau.failures = map[string]error{
+			"flame": errors.New("no GL context"),
+			"ifs":   errors.New("no GL context"),
+		}
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	h.lau.saverAt(t, 0).die()
+	h.want("module:exited:atlantis")
+	h.want("launch:failed:flame")
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 0 {
+		t.Fatalf("dead module stopped %d times with a retry on its way, want 0", got)
+	}
+	h.want("launch:failed:ifs")
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 1 {
+		t.Errorf("dead module stopped %d times after both relaunches failed, want 1", got)
+	}
+}
+
+// With one selectable module the replacement has the dead module's name. The
+// skip that stops a swap replacing a module with itself must not apply.
+func TestADeadModuleIsReplacedEvenByItself(t *testing.T) {
+	h := start(t, defaultConfig())
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	h.lau.saverAt(t, 0).die()
+	h.want("module:exited:atlantis")
+	h.want("launch:ok:atlantis")
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 1 {
+		t.Errorf("dead module stopped %d times, want 1", got)
+	}
+}
+
+// ---------------------------------------------------------------- external lock
+
+// A lock with no user activity -- loginctl lock-session over SSH, a lid close
+// -- leaves GNOME running the module behind its shield. Measured on the
+// reference host: still running 60 s in.
+func TestAnExternalLockStopsTheModule(t *testing.T) {
+	h := start(t, defaultConfig())
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	h.lockChange(true, "lock:stopped")
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 1 {
+		t.Errorf("module stopped %d times on an external lock, want 1", got)
+	}
+
+	// The schedule carries on: lock and blank still fire, and the lock stage
+	// does not try to stop a module that is already gone.
+	h.fire(wLock, "watch:lock")
+	h.fire(wBlank, "watch:blank")
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 1 {
+		t.Errorf("module stopped %d times in all, want 1", got)
+	}
+}
+
+// Stopping the module closes its Done channel. That must not read as a death,
+// or the daemon would put a fresh module up behind the shield.
+func TestAnExternalLockIsNotMistakenForADeath(t *testing.T) {
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.lau.names = []string{"atlantis", "flame"}
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+	h.lockChange(true, "lock:stopped")
+
+	// A relaunch would put a trace tag ahead of this one.
+	h.fire(wLock, "watch:lock")
+	if got := len(h.lau.askedFor()); got != 1 {
+		t.Errorf("Launch called %d times, want 1", got)
+	}
+}
+
+func TestNoSwapAfterAnExternalLock(t *testing.T) {
+	h := start(t, cyclingConfig(), func(h *harness) {
+		h.lau.names = []string{"atlantis", "flame"}
+		h.lau.honourAvoid = true
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+	h.lockChange(true, "lock:stopped")
+
+	// onCycle reports the suppression before the dispatch completes.
+	h.mon.fired <- wCycle
+	h.want("launch:suppressed")
+	h.want("watch:cycle")
+	if got := len(h.lau.askedFor()); got != 1 {
+		t.Errorf("Launch called %d times, want 1", got)
+	}
+}
+
+// A launch too far along to cancel still hands back a live saver. It must be
+// discarded, not put up behind the shield.
+func TestAnExternalLockDiscardsALaunchInFlight(t *testing.T) {
+	release := make(chan struct{})
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.lau.release = release
+		h.lau.ignoreCancel = true
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.lockChange(true, "lock:stopped")
+
+	close(release)
+	h.want("launch:discarded")
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 1 {
+		t.Errorf("late saver stopped %d times, want 1", got)
+	}
+}
+
+func TestLockChangesWithNothingOnScreenAreIgnored(t *testing.T) {
+	h := start(t, defaultConfig())
+
+	// Before the saver stage, then an unlock with a module up.
+	h.lockChange(true, "lock:ignored")
+	h.lockChange(false, "lock:ignored")
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+	h.lockChange(false, "lock:ignored")
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 0 {
+		t.Errorf("module stopped %d times by an unlock, want 0", got)
+	}
+}
+
+// The watch fails open: without it the daemon runs as releases before it did.
+func TestTheDaemonRunsWithoutALockWatch(t *testing.T) {
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.d.watchLocks = func() (lockWatcher, error) {
+			return nil, errors.New("no system bus")
+		}
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+	h.fire(wLock, "watch:lock")
+	if got := h.sess.lockCount(); got != 1 {
+		t.Errorf("Lock called %d times, want 1", got)
+	}
+}
+
+func TestALostLockWatchIsNotFatal(t *testing.T) {
+	h := start(t, defaultConfig())
+
+	close(h.locks.changes)
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	if err := h.stop(); err != nil {
+		t.Errorf("Run() = %v, want nil", err)
+	}
+	if !h.locks.isClosed() {
+		t.Error("the lock watcher was not closed on shutdown")
 	}
 }

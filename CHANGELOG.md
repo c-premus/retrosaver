@@ -18,6 +18,9 @@ All notable changes to this project are documented here. The format follows
   module, up to three times per idle period; after that it leaves the desktop showing
   until the lock stage or until you come back. `retrosaver stop` from another shell looks
   the same to the daemon, so while the daemon is running it gets a replacement module too.
+- A lock that arrives with no keyboard or mouse activity, such as `loginctl lock-session`
+  over SSH, now stops the screensaver. Before, the module kept running unseen behind GNOME's
+  lock screen until the lock stage, using the GPU the whole time.
 
 ## [0.3.0] - 2026-10-01
 

@@ -10,6 +10,10 @@
 // is worse, because dconf is the storage backend and holds no schema: a key
 // sitting at its default has no dconf entry at all, so reads would have to
 // fall back to a hardcoded copy of GNOME's defaults.
+//
+// The one exception is LockWatcher, which subscribes to logind over the system
+// bus with godbus: a change notification is a signal, and there is no command
+// to shell out to that delivers one.
 package session
 
 import (

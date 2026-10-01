@@ -75,6 +75,12 @@ type (
 		SetFilters(include, exclude []string)
 	}
 
+	// lockWatcher reports the session's lock state each time it changes.
+	lockWatcher interface {
+		Changes() <-chan bool
+		Close() error
+	}
+
 	// controller drives the GNOME session.
 	controller interface {
 		Lock() error
@@ -94,11 +100,14 @@ type Daemon struct {
 	// package overwrite the fields before calling Run. Keeping them as
 	// fields rather than adding a second constructor is what lets New and
 	// Run keep the signatures cmd/retrosaver already depends on.
-	connect  func() (idleMonitor, error)
-	modules  launcher
-	session  controller
-	backstop func() error
-	log      *slog.Logger
+	connect func() (idleMonitor, error)
+	// watchLocks subscribes to lock-state changes. It is optional: Run
+	// carries on without it when it fails.
+	watchLocks func() (lockWatcher, error)
+	modules    launcher
+	session    controller
+	backstop   func() error
+	log        *slog.Logger
 
 	// reloadC, when non-nil, asks Run to re-read the config. cmd/retrosaver
 	// feeds it from SIGHUP and from an inotify watch on the config file.
@@ -135,6 +144,13 @@ func New(cfg config.Config) *Daemon {
 				return nil, err
 			}
 			return m, nil
+		},
+		watchLocks: func() (lockWatcher, error) {
+			w, err := session.WatchLocks()
+			if err != nil {
+				return nil, err // not a typed nil; see connect above
+			}
+			return w, nil
 		},
 		modules: &realLauncher{
 			finder:  modules.NewFinder(),
@@ -231,6 +247,18 @@ func (d *Daemon) Run(ctx context.Context) error {
 	m := &machine{d: d, mon: mon, launched: make(chan launchResult, 1)}
 	defer m.shutdown()
 
+	// Watching for a lock is best effort and fails open, like the lock check
+	// in onSaver: without it a module merely keeps running behind a lock that
+	// arrives with no user activity, which is how every release before this
+	// one behaved.
+	var locks <-chan bool
+	if w, err := d.watchLocks(); err != nil {
+		d.log.Warn("not watching for session locks", "err", err)
+	} else {
+		defer w.Close()
+		locks = w.Changes()
+	}
+
 	if err := m.arm(); err != nil {
 		return err
 	}
@@ -260,6 +288,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 		case <-m.currentDone:
 			m.onModuleExit()
+
+		case locked, ok := <-locks:
+			if !ok {
+				// The system bus connection dropped. Losing this is not worth
+				// a restart: carry on as releases without it did.
+				d.log.Warn("stopped watching for session locks: lost the system bus connection")
+				locks = nil
+				continue
+			}
+			m.onLockChange(locked)
 
 		case <-d.reloadC:
 			m.reload()
@@ -356,6 +394,9 @@ type machine struct {
 	// cleared whenever current is: a saver the daemon stopped itself would
 	// otherwise read as one that died.
 	currentDone <-chan struct{}
+	// dead marks current as a module that has exited on screen and is
+	// waiting for a replacement to land before its windows are closed.
+	dead        bool
 	blanked     bool
 	activeArmed bool
 
@@ -808,7 +849,7 @@ func (m *machine) startLaunch() {
 		m.d.trace("launch:unavailable")
 		return
 	}
-	if m.current != nil && name == m.currentName {
+	if m.current != nil && !m.dead && name == m.currentName {
 		// Swapping a module for itself would tear down a perfectly good
 		// window and put an identical one back, with a gap in between. When
 		// only one module is selectable that is every single cycle, so this
@@ -869,6 +910,11 @@ func (m *machine) handleLaunch(r launchResult) {
 		if retryable(r.err) && m.attempts < 2 {
 			m.startLaunch() // retry once, with a module Pick has not tried
 		}
+		if m.cancel == nil {
+			// No retry is on its way. A module that died on screen was
+			// waiting for this launch to replace it; close its windows.
+			m.closeDead()
+		}
 		m.d.trace("launch:failed:" + r.name)
 		return
 	}
@@ -886,6 +932,7 @@ func (m *machine) handleLaunch(r launchResult) {
 	m.current = r.saver
 	m.currentName = r.name
 	m.currentDone = r.saver.Done()
+	m.dead = false
 	m.d.log.Info("screensaver running", "module", r.name)
 	m.d.trace("launch:ok:" + r.name)
 }
@@ -908,6 +955,7 @@ func (m *machine) stopSaver() {
 		m.cancel = nil
 	}
 	m.currentDone = nil
+	m.dead = false
 	if m.current != nil {
 		if err := m.current.Stop(); err != nil {
 			m.d.log.Error("stopping the module", "err", err)
@@ -917,11 +965,47 @@ func (m *machine) stopSaver() {
 	m.currentName = ""
 }
 
+// onLockChange handles the session's lock state changing under the daemon.
+//
+// Only a lock with a module up, or on its way, needs anything. GNOME leaves an
+// X client running behind its lock shield, so a lock that comes with no user
+// activity -- `loginctl lock-session` over SSH, a lid close -- would otherwise
+// keep a module drawing, unseen, until the lock stage. A lock the user makes
+// at the keyboard never gets here with a module up: the keypress is user
+// activity, and onActive has already torn everything down.
+//
+// An unlock needs nothing either. Unlocking is user activity too, and onActive
+// resets from there.
+//
+// The stage is left where it is. Lock and blank still fire on schedule, the
+// cycle chain stops at onCycle's own lock check, and with currentDone cleared
+// by stopSaver nothing reads the stopped module as a death to replace.
+func (m *machine) onLockChange(locked bool) {
+	if !locked || m.stage != stageSaver || (m.current == nil && m.cancel == nil) {
+		m.d.trace("lock:ignored")
+		return
+	}
+	m.d.log.Info("the session was locked: stopping the screensaver")
+	// A launch already past the point of cancelling still hands back a live
+	// saver. Bumping the generation makes handleLaunch discard it rather than
+	// put it up behind the shield.
+	m.gen++
+	m.stopSaver()
+	m.d.trace("lock:stopped")
+}
+
 // onModuleExit handles the module on screen exiting by itself.
 //
 // Its windows outlive it -- retrosaver owns them -- so a dead module leaves a
 // black screen until the next stage, which is what this exists to prevent.
-// The windows are closed and another module goes up in their place.
+// Another module goes up, and the dead one's windows are closed once it has,
+// exactly as a swap retires the outgoing module.
+//
+// That order is measured, not tidiness. Closing the dead windows first and
+// mapping the replacement straight after left the new window unfullscreened
+// (2938x1590 on the 3072x1728 panel, the size Mutter gives a window it is
+// fitting around the top bar) on the reference host, while swaps -- which map
+// the new windows with the old ones still up -- never once did.
 //
 // `retrosaver stop` from another shell kills the module the same way and is
 // indistinguishable from here, so it gets a replacement too. maxRelaunches
@@ -932,20 +1016,15 @@ func (m *machine) onModuleExit() {
 	m.d.log.Warn("module exited while on screen", "module", name)
 	m.d.trace("module:exited:" + name)
 
-	// Close the windows, but not via stopSaver: that would also cancel a
-	// swap already in flight, and a swap landing is the best outcome here.
+	// Stop selecting on its Done channel, but leave it as current: whichever
+	// launch lands next retires it, as handleLaunch does on every swap.
 	m.currentDone = nil
-	if err := m.current.Stop(); err != nil {
-		m.d.log.Error("stopping the exited module", "err", err)
-	}
-	m.current = nil
-	m.currentName = ""
+	m.dead = true
 
 	switch {
 	case m.stage != stageSaver:
 		// Unreachable today, since the lock stage stops the module first. A
 		// relaunch past the saver stage would be wrong whatever the cause.
-		return
 	case m.cancel != nil:
 		// A swap is already starting a replacement; let it land.
 		return
@@ -953,16 +1032,33 @@ func (m *machine) onModuleExit() {
 		m.d.log.Warn("modules keep exiting, leaving the desktop until the next stage",
 			"relaunches", m.deaths)
 		m.d.trace("relaunch:capped")
-		return
 	case m.locked():
 		// Same rule as onSaver and onCycle: nothing goes up behind the shield.
 		m.d.trace("launch:suppressed")
+	default:
+		m.deaths++
+		m.attempts = 0
+		m.d.log.Info("starting another module")
+		m.startLaunch()
+	}
+	if m.cancel == nil {
+		// Nothing is on its way to replace it, so close its windows now.
+		m.closeDead()
+	}
+}
+
+// closeDead closes the windows of a module that died on screen, once nothing
+// is coming to take its place.
+func (m *machine) closeDead() {
+	if !m.dead {
 		return
 	}
-	m.deaths++
-	m.attempts = 0
-	m.d.log.Info("starting another module")
-	m.startLaunch()
+	m.dead = false
+	if err := m.current.Stop(); err != nil {
+		m.d.log.Error("stopping the exited module", "err", err)
+	}
+	m.current = nil
+	m.currentName = ""
 }
 
 // shutdown is the single teardown path, run from Run's defer. It is safe
