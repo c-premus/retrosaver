@@ -581,7 +581,7 @@ func preflight() error {
 
 	if _, err := os.Stat(packagedUnitPath); err != nil {
 		return fmt.Errorf(
-			"setup: %s is missing, so there is no unit to enable. Install the .deb or .rpm rather "+
+			"setup: %s is missing, so there is no unit to enable. Install the package rather "+
 				"than running setup from a source build", packagedUnitPath)
 	}
 	return nil
