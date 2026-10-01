@@ -11,6 +11,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-01
+
 ### Fixed
 
 - A module that quits or crashes while it is on screen no longer leaves the monitors
@@ -244,7 +246,8 @@ First release.
 - GNOME on Wayland only. KDE and wlroots support the Wayland idle protocols, so upstream
   xscreensaver 6.11+ works there natively.
 
-[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/c-premus/retrosaver/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/c-premus/retrosaver/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/c-premus/retrosaver/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/c-premus/retrosaver/compare/v0.2.2...v0.2.3

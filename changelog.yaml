@@ -6,6 +6,13 @@
 #
 # Keep each `note` on a SINGLE line. chglog renders every subsequent line of a note as a
 # "-" sub-bullet, which makes a wrapped sentence look like a broken list.
+- semver: 0.4.0
+  date: 2026-10-01T00:00:00Z
+  packager: Chris <63758245+c-premus@users.noreply.github.com>
+  changes:
+    - note: "Stop the screensaver on a lock without user activity"
+    - note: "Replace a module that dies on screen"
+
 - semver: 0.3.0
   date: 2026-10-01T00:00:00Z
   packager: Chris <63758245+c-premus@users.noreply.github.com>
