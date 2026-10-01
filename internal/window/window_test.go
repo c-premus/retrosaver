@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -81,24 +82,28 @@ func TestRingBufferAcrossWrites(t *testing.T) {
 	}
 }
 
-func TestReadPID(t *testing.T) {
+func TestReadPIDs(t *testing.T) {
 	dir := t.TempDir()
 	tests := []struct {
 		name    string
 		content string
-		want    int
-		wantOK  bool
+		want    []int
 	}{
-		{name: "plain", content: "1234\n", want: 1234, wantOK: true},
-		{name: "no newline", content: "1234", want: 1234, wantOK: true},
-		{name: "whitespace", content: "  1234  \n", want: 1234, wantOK: true},
-		{name: "empty", content: "", wantOK: false},
-		{name: "garbage", content: "nope\n", wantOK: false},
+		{name: "plain", content: "1234\n", want: []int{1234}},
+		{name: "no newline", content: "1234", want: []int{1234}},
+		{name: "whitespace", content: "  1234  \n", want: []int{1234}},
+		{name: "one per monitor", content: "1234\n5678\n", want: []int{1234, 5678}},
+		{name: "empty", content: ""},
+		{name: "garbage", content: "nope\n"},
 		// PID 1 is init and 0 is not a process; refusing them keeps a corrupt
 		// file from making stop signal something catastrophic.
-		{name: "pid 1 refused", content: "1\n", wantOK: false},
-		{name: "pid 0 refused", content: "0\n", wantOK: false},
-		{name: "negative refused", content: "-1\n", wantOK: false},
+		{name: "pid 1 refused", content: "1\n"},
+		{name: "pid 0 refused", content: "0\n"},
+		{name: "negative refused", content: "-1\n"},
+		// One bad line poisons the whole file rather than being skipped: it
+		// is not a file this code wrote, so none of it is trusted.
+		{name: "bad line refuses all", content: "1234\nnope\n"},
+		{name: "blank line refuses all", content: "1234\n\n5678\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -106,20 +111,35 @@ func TestReadPID(t *testing.T) {
 			if err := os.WriteFile(path, []byte(tt.content), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			got, ok := readPID(path)
-			if ok != tt.wantOK {
-				t.Fatalf("readPID(%q) ok = %v, want %v", tt.content, ok, tt.wantOK)
-			}
-			if ok && got != tt.want {
-				t.Errorf("readPID(%q) = %d, want %d", tt.content, got, tt.want)
+			if got := readPIDs(path); !slices.Equal(got, tt.want) {
+				t.Errorf("readPIDs(%q) = %v, want %v", tt.content, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestReadPIDMissingFile(t *testing.T) {
-	if _, ok := readPID(filepath.Join(t.TempDir(), "absent")); ok {
-		t.Error("readPID on a missing file reported ok")
+func TestReadPIDsMissingFile(t *testing.T) {
+	if got := readPIDs(filepath.Join(t.TempDir(), "absent")); got != nil {
+		t.Errorf("readPIDs on a missing file = %v, want nil", got)
+	}
+}
+
+func TestModuleArgs(t *testing.T) {
+	if got, want := moduleArgs(nil), []string{"-window"}; !slices.Equal(got, want) {
+		t.Errorf("moduleArgs(nil) = %q, want %q: a single monitor must launch exactly as before", got, want)
+	}
+	mon := &monitor{x: 3072, y: 0, width: 3840, height: 2160}
+	if got, want := moduleArgs(mon), []string{"-window", "-geometry", "3840x2160+3072+0"}; !slices.Equal(got, want) {
+		t.Errorf("moduleArgs(%+v) = %q, want %q", *mon, got, want)
+	}
+}
+
+func TestDistinctDropsMirroredMonitors(t *testing.T) {
+	laptop := monitor{width: 3072, height: 1728}
+	external := monitor{x: 3072, width: 3840, height: 2160}
+	got := distinct([]monitor{laptop, external, laptop})
+	if want := []monitor{laptop, external}; !slices.Equal(got, want) {
+		t.Errorf("distinct() = %v, want %v", got, want)
 	}
 }
 
@@ -182,11 +202,14 @@ func TestWriteAndClearState(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 
-	if err := writeState(4321, "atlantis", 4322); err != nil {
+	if err := writeState([]int{4321, 4323}, "atlantis", 4322); err != nil {
 		t.Fatalf("writeState() = %v", err)
 	}
-	if got := readTrimmed(t, pidPath()); got != "4321" {
-		t.Errorf("pid file = %q, want \"4321\"", got)
+	if got := readTrimmed(t, pidPath()); got != "4321\n4323" {
+		t.Errorf("pid file = %q, want one pid per line", got)
+	}
+	if got := readPIDs(pidPath()); !slices.Equal(got, []int{4321, 4323}) {
+		t.Errorf("readPIDs() after writeState = %v, want [4321 4323]", got)
 	}
 	if got := readTrimmed(t, modulePath()); got != "atlantis" {
 		t.Errorf("module file = %q, want \"atlantis\"", got)
@@ -210,7 +233,7 @@ func TestWriteStateSkipsAbsentUnclutter(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 
-	if err := writeState(4321, "flame", 0); err != nil {
+	if err := writeState([]int{4321}, "flame", 0); err != nil {
 		t.Fatalf("writeState() = %v", err)
 	}
 	if _, err := os.Stat(unclutterPIDPath()); !errors.Is(err, os.ErrNotExist) {
@@ -218,12 +241,17 @@ func TestWriteStateSkipsAbsentUnclutter(t *testing.T) {
 	}
 }
 
-// reapedSaver returns a Saver for pid whose process has already been reaped, so
-// Stop signals nothing and exercises only its handling of the state files.
-func reapedSaver(pid int) *Saver {
-	done := make(chan struct{})
-	close(done)
-	return &Saver{cmd: &exec.Cmd{Process: &os.Process{Pid: pid}}, done: done}
+// reapedSaver returns a Saver with one copy per pid, every one of whose
+// processes has already been reaped, so Stop signals nothing and exercises only
+// its handling of the state files.
+func reapedSaver(pids ...int) *Saver {
+	s := &Saver{}
+	for _, pid := range pids {
+		done := make(chan struct{})
+		close(done)
+		s.children = append(s.children, &child{cmd: &exec.Cmd{Process: &os.Process{Pid: pid}}, done: done})
+	}
+	return s
 }
 
 // On a swap the replacement writes its state before the daemon stops the
@@ -232,14 +260,14 @@ func reapedSaver(pid int) *Saver {
 func TestStopLeavesANewerSaversStateAlone(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 
-	if err := writeState(9001, "coral", 9002); err != nil {
+	if err := writeState([]int{9001, 9003}, "coral", 9002); err != nil {
 		t.Fatalf("writeState() = %v", err)
 	}
-	if err := reapedSaver(4321).Stop(); err != nil {
+	if err := reapedSaver(4321, 4323).Stop(); err != nil {
 		t.Fatalf("Stop() = %v", err)
 	}
 	for path, want := range map[string]string{
-		pidPath():          "9001",
+		pidPath():          "9001\n9003",
 		modulePath():       "coral",
 		unclutterPIDPath(): "9002",
 	} {
@@ -254,10 +282,10 @@ func TestStopLeavesANewerSaversStateAlone(t *testing.T) {
 func TestStopClearsItsOwnState(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 
-	if err := writeState(4321, "ifs", 4322); err != nil {
+	if err := writeState([]int{4321, 4323}, "ifs", 4322); err != nil {
 		t.Fatalf("writeState() = %v", err)
 	}
-	if err := reapedSaver(4321).Stop(); err != nil {
+	if err := reapedSaver(4321, 4323).Stop(); err != nil {
 		t.Fatalf("Stop() = %v", err)
 	}
 	for _, p := range []string{pidPath(), modulePath(), unclutterPIDPath()} {
@@ -367,6 +395,20 @@ func TestProcessReturnsNilForAZeroSaver(t *testing.T) {
 	}
 	if p := (&Saver{}).Process(); p != nil {
 		t.Errorf("(&Saver{}).Process() = %v, want nil", p)
+	}
+}
+
+func TestPIDsListsEveryCopyPrimaryFirst(t *testing.T) {
+	s := reapedSaver(4321, 4323)
+	if got := s.PIDs(); !slices.Equal(got, []int{4321, 4323}) {
+		t.Errorf("PIDs() = %v, want [4321 4323]", got)
+	}
+	if got := s.Process().Pid; got != 4321 {
+		t.Errorf("Process().Pid = %d, want the primary monitor's copy, 4321", got)
+	}
+	var none *Saver
+	if got := none.PIDs(); got != nil {
+		t.Errorf("(*Saver)(nil).PIDs() = %v, want nil", got)
 	}
 }
 

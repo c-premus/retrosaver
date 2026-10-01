@@ -377,3 +377,18 @@ func TestDaemonRunningFailsTowardRestoring(t *testing.T) {
 		t.Error("daemonRunning on a missing proc root = true, want false")
 	}
 }
+
+func TestRunningMessage(t *testing.T) {
+	tests := []struct {
+		pids []int
+		want string
+	}{
+		{[]int{4321}, "atlantis running (pid 4321)"},
+		{[]int{4321, 4323}, "atlantis running on 2 monitors (pids 4321, 4323)"},
+	}
+	for _, tt := range tests {
+		if got := runningMessage("atlantis", tt.pids); got != tt.want {
+			t.Errorf("runningMessage(%v) = %q, want %q", tt.pids, got, tt.want)
+		}
+	}
+}

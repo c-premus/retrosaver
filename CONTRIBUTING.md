@@ -68,7 +68,8 @@ RETROSAVER_LIVE=1 go test ./internal/... -run Live -v
 ```
 
 `TestLiveLock` additionally needs `RETROSAVER_LIVE_LOCK=1`, because it genuinely locks your
-screen.
+screen. `TestLiveLaunchCoversEveryMonitor` needs `RETROSAVER_LIVE_DISPLAY=1`, because it
+launches a module on every monitor for a moment.
 
 ## Things that will be declined
 

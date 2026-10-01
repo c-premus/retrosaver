@@ -34,7 +34,7 @@ the idle monitor.
 
 | Stage | Default | Action |
 |---|---|---|
-| Saver | 5 min idle | Launch a random module fullscreen, always-on-top, pointer hidden |
+| Saver | 5 min idle | Launch a random module fullscreen on every monitor, always-on-top, pointer hidden |
 | Cycle | every 5 min thereafter | Swap in another module not yet shown this idle period |
 | Lock | 20 min idle | Kill the module, `loginctl lock-session` |
 | Blank | 22 min idle | Power the display off |
@@ -44,7 +44,7 @@ cmd/retrosaver/      subcommand dispatch: daemon | run | stop | list | setup | t
 internal/config/     KEY=value parser (never executes the file)
 internal/modules/    discovery: config XML basenames ∩ executables in libexec
 internal/idle/       org.gnome.Mutter.IdleMonitor D-Bus client
-internal/window/     wmctrl / xdotool / unclutter wrappers
+internal/window/     wmctrl / xdotool / unclutter wrappers, Xinerama monitor layout
 internal/session/    loginctl lock-session, gsettings idle-delay
 internal/watch/      inotify watch on the config file, for live reload
 internal/daemon/     the state machine: five watch kinds, the cycle one self-re-arming
@@ -134,7 +134,12 @@ Seven steps, in order. They are written against the installed package; the comma
    `DISPLAY=:0 /usr/libexec/xscreensaver/atlantis -window` → a window of swimming dolphins
    and sharks. Repeat with `flame` and `ifs`.
 2. **The fullscreen wrapper.** `retrosaver run atlantis` → covers the screen, sits above the
-   top bar, pointer hidden. `retrosaver stop` clears it.
+   top bar, pointer hidden. `retrosaver stop` clears it. With more than one monitor it
+   prints one PID per monitor, and each copy's window must match a line of
+   `xrandr --listmonitors` exactly:
+   `for p in $(cat "$XDG_RUNTIME_DIR/retrosaver.pid"); do xwininfo -id "$(xdotool search --onlyvisible --pid "$p")" | grep -E 'Absolute|Width|Height'; done`.
+   `RETROSAVER_LIVE=1 RETROSAVER_LIVE_DISPLAY=1 go test ./internal/window -run Live -v`
+   checks the same thing.
 3. **Random selection.** Run `retrosaver run` five times: different modules each time, never
    a helper binary and never an excluded one.
 4. **The full state machine, on compressed timings.** Set `SAVER_DELAY=15`, `LOCK_AFTER=20`,
@@ -163,7 +168,9 @@ What cannot be automated, and how the tests that need a real session are kept ou
 - **Live tests are gated on an environment variable**, not a build tag, so `go test ./...`
   stays green anywhere while one command exercises them for real:
   `RETROSAVER_LIVE=1 go test ./internal/... -run Live -v`. `TestLiveLock` additionally needs
-  `RETROSAVER_LIVE_LOCK=1`, because it genuinely locks the screen.
+  `RETROSAVER_LIVE_LOCK=1`, because it genuinely locks the screen, and
+  `TestLiveLaunchCoversEveryMonitor` needs `RETROSAVER_LIVE_DISPLAY=1`, because it takes
+  over every monitor for a moment.
 
 ## Code standards
 
@@ -180,16 +187,21 @@ What cannot be automated, and how the tests that need a real session are kept ou
   has an upstream counterpart), this paragraph, and the upstream Renovate rule that stops
   it proposing `go` directive bumps. `gofmt` is a hard CI gate; `go vet`
   and `go test -race` likewise.
-- Standard library only wherever possible. There are **exactly two** direct dependencies,
-  both pure Go, and that is what keeps `CGO_ENABLED=0` viable and the artifact genuinely
+- Standard library only wherever possible. There are **exactly three** direct dependencies,
+  all pure Go, and that is what keeps `CGO_ENABLED=0` viable and the artifact genuinely
   static:
   - `github.com/godbus/dbus/v5` — the session bus.
   - `golang.org/x/sys` — the inotify syscalls, imported directly by `internal/watch`.
     This is not a slip. The stdlib `syscall` package is frozen and its own documentation
     points callers at `x/sys`, so removing it would trade an endorsed dependency for a
     discouraged one.
+  - `github.com/jezek/xgb` — reads the monitor layout from XWayland's Xinerama
+    extension, used only by `internal/window`. The recorded decision: every other X
+    operation shells out to `wmctrl` or `xdotool`, but neither reports the monitor
+    layout, and a hand-written client would have to redo the connection handshake and
+    the Xauthority cookie that xgb already does.
 
-  A third needs a recorded decision. **A cgo dependency is forbidden outright** — the
+  A fourth needs a recorded decision. **A cgo dependency is forbidden outright** — the
   invariant that matters is pure-Go, not the count. `go mod tidy -diff` in CI is what
   enforces the list mechanically.
 - Wrap errors with `%w` and enough context to name the file or D-Bus call that failed.
@@ -372,7 +384,9 @@ needs a matching rule**, or it silently rots.
 - **Live tests are gated on `RETROSAVER_LIVE`, not a build tag**, so `go test ./...` stays
   green anywhere while one command exercises them on a real session:
   `RETROSAVER_LIVE=1 go test ./internal/... -run Live -v`. `TestLiveLock` needs
-  `RETROSAVER_LIVE_LOCK=1` as well, because it genuinely locks the screen.
+  `RETROSAVER_LIVE_LOCK=1` as well, because it genuinely locks the screen, and
+  `TestLiveLaunchCoversEveryMonitor` needs `RETROSAVER_LIVE_DISPLAY=1`, because it takes
+  over every monitor.
 - **An overdue idle watch fires as soon as it is added.** Verified against gnome-shell 50.1,
   so the daemon needs no cold-start handling when it starts on an already-idle session.
   Do not add any.
@@ -408,6 +422,32 @@ needs a matching rule**, or it silently rots.
   exited, so the unit's own cleanup still restores. The check **fails toward restoring**:
   an unreadable `/proc` counts as no daemon, because `idle-delay` stuck at `0` with no
   daemon means no auto-lock at all. `--keep-idle-delay` skips the restore unconditionally.
+- **Every monitor runs its own copy of the module; one window is never stretched across
+  them.** EWMH `_NET_WM_FULLSCREEN_MONITORS` looks like the tool for spanning, and it is
+  silently ignored on any scaled GNOME session. With fractional scaling XWayland's
+  coordinates are Mutter's logical layout multiplied by `ceil(highest monitor scale)`, and
+  `meta_x11_display_ensure_xinerama_indices` matches Xinerama rectangles to monitors with
+  no scale conversion — nothing matches, every monitor keeps index 0, and a request naming
+  any other index is cleared (Mutter 50.1, unchanged on `main`; upstream
+  [mutter#4901](https://gitlab.gnome.org/GNOME/mutter/-/work_items/4901)). Measured on the reference host: a 125% laptop panel plus a 100%
+  external monitor, and the window stayed 3072×1728. It only works when the two coordinate
+  spaces coincide, such as identical monitors at 100%.
+- **Place each copy with `-geometry`, in X coordinates, before fullscreening it.** Xt turns
+  `-geometry WxH+X+Y` into USPosition, which Mutter honours on initial placement after
+  converting it to logical coordinates. `wmctrl add,fullscreen` then fullscreens the window
+  on the monitor holding the *centre* of its requested rectangle. Read the rectangles from
+  Xinerama (or `xrandr --listmonitors`), never from Mutter's `DisplayConfig`, whose logical
+  numbers are wrong by the scale factor. The top bar hides while the primary monitor has any
+  fullscreen window, and a fullscreen window keeps its layer when focus moves to another
+  monitor's, so every copy stays up. One monitor launches exactly as before, with no
+  `-geometry`.
+- **A launch is all or nothing.** If any copy fails, every copy is stopped and the error
+  returned, so the daemon's single retry picks a different module and a failed swap leaves
+  the outgoing module on screen. Copies are brought up and stopped concurrently; serially,
+  three monitors would mean fifteen seconds of a half-covered desktop.
+- **The PID file holds one PID per line, primary monitor first.** A single-line file from an
+  older version reads the same way. A file with any line that is not a plausible PID is
+  ignored whole rather than partly trusted. `clearStateFor` keys on the first PID.
 - **Every PID read off disk is checked against `/proc/<pid>/cmdline` before being signalled.**
   The runtime state file can be minutes stale after a crash and PIDs are recycled.
 - **A `Saver` clears the runtime state files only while the PID file still names it.** On a

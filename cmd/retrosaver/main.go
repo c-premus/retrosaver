@@ -321,8 +321,21 @@ func cmdRun(args []string) error {
 	}
 	// The module outlives this process on purpose: `retrosaver run` hands the
 	// screen over and returns, and `retrosaver stop` takes it back.
-	fmt.Printf("%s running (pid %d)\n", name, saver.Process().Pid)
+	fmt.Println(runningMessage(name, saver.PIDs()))
 	return nil
+}
+
+// runningMessage reports a launched module, naming every monitor's copy when
+// there is more than one.
+func runningMessage(name string, pids []int) string {
+	if len(pids) == 1 {
+		return fmt.Sprintf("%s running (pid %d)", name, pids[0])
+	}
+	ids := make([]string, len(pids))
+	for i, p := range pids {
+		ids[i] = strconv.Itoa(p)
+	}
+	return fmt.Sprintf("%s running on %d monitors (pids %s)", name, len(pids), strings.Join(ids, ", "))
 }
 
 func cmdStop(args []string) error {

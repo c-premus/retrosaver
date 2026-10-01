@@ -43,7 +43,7 @@ But the parts needed to rebuild the thin missing layer all work:
 | XScreenSaver **modules** as standalone programs | Ordinary X11 clients, run fine under XWayland |
 | Installing modules **without** the daemon | The data and gl packages only `Suggests:` `xscreensaver` |
 | Idle detection | `org.gnome.Mutter.IdleMonitor` D-Bus API |
-| Fullscreen and always-on-top for an XWayland window | Mutter implements EWMH for X11 clients |
+| Fullscreen and always-on-top for an XWayland window | Mutter implements EWMH for X11 clients, on whichever monitor the window was placed |
 | Locking the session | `loginctl lock-session` hands off to GNOME's lock screen |
 | Blanking the display | GNOME's own `org.gnome.desktop.session idle-delay` |
 
@@ -54,7 +54,7 @@ any stage tears everything down and re-arms from zero.
 
 | Stage | Default trigger | Action |
 |---|---|---|
-| 1. Saver | 5 min idle | Launch a random module fullscreen, always-on-top, pointer hidden |
+| 1. Saver | 5 min idle | Launch a random module fullscreen on every monitor, always-on-top, pointer hidden |
 | 2. Lock | 20 min idle | Kill the module, `loginctl lock-session` |
 | 3. Blank | 22 min idle | Power the display off |
 

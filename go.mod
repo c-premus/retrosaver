@@ -39,7 +39,15 @@ toolchain go1.27.1
 
 require github.com/godbus/dbus/v5 v5.2.2
 
+// github.com/jezek/xgb is the third dependency, used only by internal/window to
+// read the monitor layout from XWayland's Xinerama extension, in the X
+// coordinates a module's -geometry has to name. See docs/development.md: no tool
+// already depended on reports it, and a hand-written X client would need the
+// connection handshake and Xauthority cookie that xgb already does.
+require github.com/jezek/xgb v1.3.1
+
 // golang.org/x/sys is a direct dependency, imported by internal/watch for the
-// inotify syscalls. See docs/development.md: the rule is two pure-Go dependencies, not
-// one, because the stdlib syscall package is frozen and points callers here.
+// inotify syscalls. See docs/development.md: it is on the list of pure-Go
+// dependencies on purpose, because the stdlib syscall package is frozen and
+// points callers here.
 require golang.org/x/sys v0.48.0

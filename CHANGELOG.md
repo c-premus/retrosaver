@@ -11,6 +11,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- On a multi-monitor desktop every monitor now gets the screensaver, not just one. Each
+  monitor runs its own copy of the module, sized to that monitor, so mixed sizes and
+  fractional scaling both work. `retrosaver run` prints one PID per monitor, and the
+  runtime PID file holds one per line. A single monitor behaves exactly as before. Thanks
+  to @christofdamian.
+
 ## [0.2.4] - 2026-09-30
 
 ### Fixed

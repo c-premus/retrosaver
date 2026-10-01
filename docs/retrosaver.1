@@ -26,7 +26,8 @@ tears everything down and re\-arms from zero.
 .TP
 .B Saver
 5 minutes idle by default. Launch a random display module fullscreen, always\-on\-top,
-with the pointer hidden. Every 5 minutes thereafter the module is replaced by another
+with the pointer hidden. With more than one monitor, each monitor runs its own copy of
+the module, sized to that monitor. Every 5 minutes thereafter the module is replaced by another
 one, chosen at random from those not yet shown this idle period. Switching modules is
 not a stage: it does not advance the sequence, and it stops at the lock threshold. See
 .BR CYCLE_AFTER .
@@ -244,7 +245,7 @@ enables it, because enabling a
 unit needs the user's own session bus.
 .TP
 .I $XDG_RUNTIME_DIR/retrosaver.pid
-PID of the running module. Every PID read back is checked against
+PIDs of the running module, one per line: one copy per monitor, primary first. Every PID read back is checked against
 .I /proc/<pid>/cmdline
 before being signalled, because the file can be stale after a crash and PIDs are recycled.
 .TP
