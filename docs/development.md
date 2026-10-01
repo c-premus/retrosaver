@@ -44,7 +44,7 @@ cmd/retrosaver/      subcommand dispatch: daemon | run | stop | list | setup | t
 internal/config/     KEY=value parser (never executes the file)
 internal/modules/    discovery: config XML basenames ∩ executables in libexec
 internal/idle/       org.gnome.Mutter.IdleMonitor D-Bus client
-internal/window/     wmctrl / xdotool / unclutter wrappers, Xinerama monitor layout
+internal/window/     saver windows (one per monitor, over X via xgb), module processes, unclutter
 internal/session/    loginctl lock-session, gsettings idle-delay
 internal/watch/      inotify watch on the config file, for live reload
 internal/daemon/     the state machine: five watch kinds, the cycle one self-re-arming
@@ -133,11 +133,13 @@ Seven steps, in order. They are written against the installed package; the comma
 1. **A module runs at all.**
    `DISPLAY=:0 /usr/libexec/xscreensaver/atlantis -window` → a window of swimming dolphins
    and sharks. Repeat with `flame` and `ifs`.
-2. **The fullscreen wrapper.** `retrosaver run atlantis` → covers the screen, sits above the
-   top bar, pointer hidden. `retrosaver stop` clears it. With more than one monitor it
-   prints one PID per monitor, and each copy's window must match a line of
+2. **The fullscreen wrapper.** `retrosaver run atlantis` → covers every monitor, sits above
+   the top bar, pointer hidden; it stays in the foreground until Ctrl-C or
+   `retrosaver stop` from another shell. Repeat with `anemone`, which sizes itself once at
+   startup and so shows at once whether its window was full-size from the start: it must
+   fill the screen, not a corner. Each saver window must match a line of
    `xrandr --listmonitors` exactly:
-   `for p in $(cat "$XDG_RUNTIME_DIR/retrosaver.pid"); do xwininfo -id "$(xdotool search --onlyvisible --pid "$p")" | grep -E 'Absolute|Width|Height'; done`.
+   `xdotool search --name '^retrosaver: ' | while read -r w; do xwininfo -id "$w" | grep -E 'Absolute|Width|Height'; done`.
    `RETROSAVER_LIVE=1 RETROSAVER_LIVE_DISPLAY=1 go test ./internal/window -run Live -v`
    checks the same thing.
 3. **Random selection.** Run `retrosaver run` five times: different modules each time, never
@@ -195,11 +197,12 @@ What cannot be automated, and how the tests that need a real session are kept ou
     This is not a slip. The stdlib `syscall` package is frozen and its own documentation
     points callers at `x/sys`, so removing it would trade an endorsed dependency for a
     discouraged one.
-  - `github.com/jezek/xgb` — reads the monitor layout from XWayland's Xinerama
-    extension, used only by `internal/window`. The recorded decision: every other X
-    operation shells out to `wmctrl` or `xdotool`, but neither reports the monitor
-    layout, and a hand-written client would have to redo the connection handshake and
-    the Xauthority cookie that xgb already does.
+  - `github.com/jezek/xgb` — the X connection `internal/window` uses to read the monitor
+    layout from Xinerama and to create the saver windows. The recorded decision: a module
+    has to start in a window that is already fullscreen (see the gotcha below), which
+    means owning the window, and no command-line tool can create one and keep it alive.
+    A hand-written client would have to redo the connection handshake and the
+    Xauthority cookie that xgb already does. It replaced `wmctrl` and `xdotool`.
 
   A fourth needs a recorded decision. **A cgo dependency is forbidden outright** — the
   invariant that matters is pure-Go, not the count. `go mod tidy -diff` in CI is what
@@ -396,8 +399,8 @@ needs a matching rule**, or it silently rots.
   the idle monitor watches libinput, not synthetic X events. Worse, GNOME treats XTEST
   injection through XWayland as remote control and prompts the user to "allow remote
   interaction". Anything needing a reset idle clock needs a human, and lives behind
-  `RETROSAVER_LIVE_INPUT=1`. `xdotool search` in `internal/window` is fine — it queries
-  windows and injects nothing.
+  `RETROSAVER_LIVE_INPUT=1`. Creating and querying windows over X, as `internal/window`
+  does, is fine — it injects nothing.
 - **Whether idle watches re-arm after a reset is unknown**, and the daemon does not depend
   on it: `daemon.rearm` drops every watch and registers a fresh set, which is correct under
   either behaviour. `RemoveWatch` accepts unknown and already-removed IDs without
@@ -432,19 +435,35 @@ needs a matching rule**, or it silently rots.
   [mutter#4901](https://gitlab.gnome.org/GNOME/mutter/-/work_items/4901)). Measured on the reference host: a 125% laptop panel plus a 100%
   external monitor, and the window stayed 3072×1728. It only works when the two coordinate
   spaces coincide, such as identical monitors at 100%.
-- **Place each copy with `-geometry`, in X coordinates, before fullscreening it.** Xt turns
-  `-geometry WxH+X+Y` into USPosition, which Mutter honours on initial placement after
-  converting it to logical coordinates. `wmctrl add,fullscreen` then fullscreens the window
-  on the monitor holding the *centre* of its requested rectangle. Read the rectangles from
-  Xinerama (or `xrandr --listmonitors`), never from Mutter's `DisplayConfig`, whose logical
-  numbers are wrong by the scale factor. The top bar hides while the primary monitor has any
-  fullscreen window, and a fullscreen window keeps its layer when focus moves to another
-  monitor's, so every copy stays up. One monitor launches exactly as before, with no
-  `-geometry`.
-- **A launch is all or nothing.** If any copy fails, every copy is stopped and the error
-  returned, so the daemon's single retry picks a different module and a failed swap leaves
-  the outgoing module on screen. Copies are brought up and stopped concurrently; serially,
-  three monitors would mean fifteen seconds of a half-covered desktop.
+- **A module must start in a window that is already its final size.** Many modules size
+  themselves once, at startup. `anemone` allocates its drawing pixmaps then, and its resize
+  handler's re-allocation is compiled out (`#if 0`), so a module that made its own window
+  at Xt's default 1280×720 and was fullscreened afterwards drew into a 1280×720 corner and
+  left the rest black — in every release up to 0.2.4. Passing `-geometry` is not enough
+  either: Mutter first maps a normal window shrunk to fit around the top bar (2938×1590
+  on a 3072×1728 panel). So retrosaver creates the windows itself, as XScreenSaver does,
+  and starts each module inside one with `-window-id`.
+- **Request fullscreen before mapping, then wait for `WM_STATE`.** Each saver window is
+  created at its monitor's rectangle with USPosition/USSize hints and `_NET_WM_STATE =
+  [FULLSCREEN, ABOVE]` set *before* `MapWindow`; Mutter honours an initial
+  `_NET_WM_STATE`, so the window is never any other size. Until the window manager sets
+  ICCCM `WM_STATE` the geometry is only what was requested, so `settle` waits for that
+  before checking it. Drop the initial state and Mutter maps it at 2938×1590 —
+  `TestLiveLaunchCoversEveryMonitor` fails exactly that way. Read the rectangles from
+  Xinerama (or `xrandr --listmonitors`), never from Mutter's `DisplayConfig`, whose
+  logical numbers are wrong by the scale factor. The top bar hides while the primary
+  monitor has any fullscreen window, and a fullscreen window keeps its layer when focus
+  moves to another monitor's, so every copy stays up. GL modules render fine in the
+  root's default visual, so no visual selection is needed.
+- **The saver windows live as long as the process that created them.** The daemon holds
+  them for the life of a launch. `retrosaver run` therefore stays in the foreground, and
+  SIGHUP is one of the signals that ends it, so closing the terminal clears the screen
+  rather than leaving a module drawing into windows that are gone.
+- **A launch is all or nothing.** If any copy exits within the half-second startup grace —
+  a module that cannot run does — every copy is stopped and the windows closed, so the
+  daemon's single retry picks a different module and a failed swap leaves the outgoing
+  module on screen. Copies are stopped concurrently, and the windows are destroyed only
+  after every module has gone.
 - **The PID file holds one PID per line, primary monitor first.** A single-line file from an
   older version reads the same way. A file with any line that is not a plausible PID is
   ignored whole rather than partly trusted. `clearStateFor` keys on the first PID.

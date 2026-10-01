@@ -5,13 +5,14 @@
 // portable equivalent. The constraint makes a build on another OS report
 // "no Go files" rather than fail with a page of undefined symbols.
 
-// Package window launches an XScreenSaver module on every monitor and makes
-// each copy's X11 window fullscreen and always-on-top.
+// Package window puts an XScreenSaver module on every monitor: one copy per
+// monitor, each drawing in a fullscreen, always-on-top X11 window that
+// retrosaver creates itself.
 //
-// Modules are ordinary X11 clients running under XWayland. Mutter implements
-// EWMH for them, which is why wmctrl works. The monitor layout comes from
-// XWayland's Xinerama extension, in X coordinates, which is what a module's
-// -geometry has to name.
+// Modules are ordinary X11 clients running under XWayland, and so are these
+// windows. Mutter implements EWMH for them, which is what makes fullscreen and
+// above work. The monitor layout comes from XWayland's Xinerama extension, in
+// the X coordinates the windows are created at.
 package window
 
 import (
@@ -31,14 +32,20 @@ import (
 	"time"
 )
 
-// ErrNoWindow reports that a module process started but never mapped a window.
-// The caller should kill it and try a different module.
+// ErrNoWindow reports that a saver could not be put on screen: the window
+// manager never managed its window, or the module exited as soon as it started.
+// The caller should try a different module.
 var ErrNoWindow = errors.New("window: module mapped no window")
 
 const (
-	// windowDeadline bounds the wait for a module's window to appear. A
-	// module that has not mapped anything by now is not going to.
+	// windowDeadline bounds the wait for the window manager to put a saver
+	// window up. One it has not managed by now is not going to be.
 	windowDeadline = 5 * time.Second
+
+	// startupGrace is how long a freshly started module has to fail before
+	// the launch counts as a success. A module that cannot run exits well
+	// within it.
+	startupGrace = 500 * time.Millisecond
 
 	// stopGrace is how long a module gets to exit on SIGTERM before SIGKILL.
 	stopGrace = 2 * time.Second
@@ -71,6 +78,13 @@ type Saver struct {
 	module   string
 	children []*child
 
+	// screen holds the windows the copies draw in. It is nil only on a Saver
+	// built by a test.
+	screen *screen
+
+	// done is closed when any copy of the module exits. See Done.
+	done chan struct{}
+
 	unclutter *exec.Cmd
 
 	// unclutterDone is closed once unclutter has been reaped. It is nil when
@@ -82,29 +96,27 @@ type Saver struct {
 	stopErr  error
 }
 
-// child is one module process and the monitor it covers.
+// child is one module process and the window it draws in.
 type child struct {
 	cmd    *exec.Cmd
 	module string
 
-	// mon is the monitor this child was placed on, or nil when there is only
-	// one to cover and the window manager places the window itself.
-	mon *monitor
-
 	// done is closed once cmd has been reaped; waitErr is set before it is
 	// closed. It is a closed-channel broadcast rather than a value send
-	// because both findWindow and stop wait on it.
+	// because Launch, Done and stop all wait on it.
 	done    chan struct{}
 	waitErr error
 
 	stderr *ringBuffer
 }
 
-// Launch starts the module at path on every monitor, waits for each window to
-// appear, then sets fullscreen and above via EWMH and hides the pointer.
+// Launch starts the module at path on every monitor, each copy drawing in a
+// fullscreen, always-on-top window retrosaver has already put over its
+// monitor, and hides the pointer.
 //
-// It returns ErrNoWindow when a window does not appear within the timeout, so
-// the daemon can retry with a different module rather than failing outright.
+// It returns ErrNoWindow when no saver window could be put up, or when a copy
+// of the module exits straight away, so the daemon can retry with a different
+// module rather than failing outright.
 func Launch(path string) (*Saver, error) {
 	return LaunchContext(context.Background(), path)
 }
@@ -122,43 +134,30 @@ func LaunchContext(ctx context.Context, path string) (*Saver, error) {
 	module := filepath.Base(path)
 	env := moduleEnv()
 
-	s := &Saver{module: module}
-	for _, mon := range placements(moduleDisplay()) {
-		c, err := startChild(path, module, env, mon)
+	scr, err := openScreen(ctx, moduleDisplay(), module)
+	if err != nil {
+		return nil, err
+	}
+	s := &Saver{module: module, screen: scr, done: make(chan struct{})}
+	for _, w := range scr.windows {
+		c, err := startChild(path, module, env, uint32(w))
 		if err != nil {
 			_ = s.Stop()
 			return nil, err
 		}
 		s.children = append(s.children, c)
 	}
+	s.watchChildren()
 
-	// Each child waits up to windowDeadline for its window, so the children
-	// are brought up concurrently: serially, three monitors would mean up to
-	// fifteen seconds of a half-covered desktop.
-	errs := make([]error, len(s.children))
-	var wg sync.WaitGroup
-	for i, c := range s.children {
-		wg.Go(func() { errs[i] = c.show(ctx, env) })
-	}
-	wg.Wait()
-
-	// A cancelled launch reports the cancellation itself, never a child's
-	// ErrNoWindow, for the same reason findWindow does: the daemon must not
-	// spend its single retry on a launch it abandoned on purpose.
-	if err := ctx.Err(); errors.Is(err, context.Canceled) {
+	if err := s.awaitStartup(ctx); err != nil {
 		_ = s.Stop()
 		return nil, err
-	}
-	for _, err := range errs {
-		if err != nil {
-			_ = s.Stop()
-			return nil, err
-		}
 	}
 
 	// Pointer hiding is cosmetic. A missing or unhappy unclutter must not
 	// cost the user a working screensaver. It hides the pointer everywhere,
-	// so one serves every monitor.
+	// so one serves every monitor. The saver windows' own blank cursor
+	// already covers them; unclutter is belt and braces.
 	s.unclutter, s.unclutterDone = startUnclutter(env)
 
 	if err := writeState(s.PIDs(), module, pidOf(s.unclutter)); err != nil {
@@ -168,42 +167,57 @@ func LaunchContext(ctx context.Context, path string) (*Saver, error) {
 	return s, nil
 }
 
-// placements decides where the module's copies go: one per monitor, or a
-// single nil placement -- one window the window manager places itself, exactly
-// as before multi-monitor support -- when there is only one monitor or the
-// layout cannot be read.
-func placements(display string) []*monitor {
-	mons, err := monitors(display)
-	if err != nil {
-		// Covering one monitor beats covering none.
-		slog.Warn("reading the monitor layout; covering one monitor", "err", err)
+// awaitStartup gives every copy startupGrace to fail. A module that cannot run
+// -- no GL context, a bad option, a missing data file -- exits within moments
+// of starting, and reporting that here, with its stderr, is what lets the
+// daemon spend its retry on a different module instead of leaving a black
+// window up.
+func (s *Saver) awaitStartup(ctx context.Context) error {
+	timer := time.NewTimer(startupGrace)
+	defer timer.Stop()
+	select {
+	case <-s.done:
+		for _, c := range s.children {
+			if c.reaped() {
+				return fmt.Errorf("%w: %s exited on startup (%v): %s",
+					ErrNoWindow, c.module, c.waitErr, c.stderr.String())
+			}
+		}
+		return fmt.Errorf("%w: %s exited on startup", ErrNoWindow, s.module)
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
-	if len(mons) < 2 {
-		return []*monitor{nil}
-	}
-	out := make([]*monitor, len(mons))
-	for i := range mons {
-		out[i] = &mons[i]
-	}
-	return out
 }
 
-// moduleArgs is the command line for a module placed on mon, or left to the
-// window manager when mon is nil.
+// watchChildren closes s.done as soon as any copy of the module exits.
+func (s *Saver) watchChildren() {
+	var once sync.Once
+	for _, c := range s.children {
+		go func() {
+			<-c.done
+			once.Do(func() { close(s.done) })
+		}()
+	}
+}
+
+// Done is closed as soon as any copy of the module exits, for whatever reason:
+// Stop, `retrosaver stop` from another shell, or the module quitting by itself.
+// `retrosaver run` waits on it.
+func (s *Saver) Done() <-chan struct{} { return s.done }
+
+// windowIDArgs is the command line that makes a module draw in window w.
 //
-// -window: "Draw on a newly-created window. This is the default." There is no
-// usable root window under XWayland, so -root is not an option. -geometry is
-// Xt's standard option, which every module accepts.
-func moduleArgs(mon *monitor) []string {
-	if mon == nil {
-		return []string{"-window"}
-	}
-	return []string{"-window", "-geometry", mon.geometry()}
+// -window-id: "Draw on the specified window." The module adopts the window as
+// it is, size included, which is the whole point: it starts at its final size.
+func windowIDArgs(w uint32) []string {
+	return []string{"-window-id", fmt.Sprintf("0x%x", w)}
 }
 
-// startChild starts one copy of the module at path, placed on mon.
-func startChild(path, module string, env []string, mon *monitor) (*child, error) {
-	cmd := exec.Command(path, moduleArgs(mon)...)
+// startChild starts one copy of the module at path, drawing in window w.
+func startChild(path, module string, env []string, w uint32) (*child, error) {
+	cmd := exec.Command(path, windowIDArgs(w)...)
 	cmd.Env = env
 	// Own process group: a module may fork helpers, and stop must be able to
 	// take the whole tree rather than orphaning children onto the screen.
@@ -218,7 +232,6 @@ func startChild(path, module string, env []string, mon *monitor) (*child, error)
 	c := &child{
 		cmd:    cmd,
 		module: module,
-		mon:    mon,
 		done:   make(chan struct{}),
 		stderr: newRingBuffer(stderrTail),
 	}
@@ -232,15 +245,6 @@ func startChild(path, module string, env []string, mon *monitor) (*child, error)
 		close(c.done)
 	}()
 	return c, nil
-}
-
-// show waits for the child's window, then makes it fullscreen and above.
-func (c *child) show(ctx context.Context, env []string) error {
-	id, err := c.findWindow(ctx, env)
-	if err != nil {
-		return err
-	}
-	return c.fullscreen(ctx, env, id)
 }
 
 // moduleEnv returns the environment for a module, defaulting DISPLAY.
@@ -257,106 +261,6 @@ func moduleDisplay() string {
 		return display
 	}
 	return ":0"
-}
-
-// findWindow waits for the module to map a window and returns its ID.
-//
-// xdotool's --sync blocks until a match appears, so there is no poll loop and
-// no race against a window that maps between two polls. The surrounding select
-// supplies what --sync lacks: a deadline, cancellation, and an early exit when
-// the module dies before mapping anything.
-func (c *child) findWindow(ctx context.Context, env []string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, windowDeadline)
-	defer cancel()
-
-	type result struct {
-		id  string
-		err error
-	}
-	res := make(chan result, 1)
-
-	go func() {
-		pid := strconv.Itoa(c.cmd.Process.Pid)
-		cmd := exec.CommandContext(ctx, "xdotool", "search", "--sync", "--onlyvisible", "--pid", pid)
-		cmd.Env = env
-		out, err := cmd.Output()
-		if err != nil {
-			res <- result{err: err}
-			return
-		}
-		id, err := firstWindowID(string(out))
-		res <- result{id: id, err: err}
-	}()
-
-	select {
-	case r := <-res:
-		// Cancelling ctx kills xdotool, so r.err may be nothing but the
-		// cancellation surfacing as a signal. Both this case and ctx.Done()
-		// are ready then and select picks between them at random, so report
-		// the cancellation explicitly: otherwise an abandoned launch looks
-		// like a broken module about half the time, and the daemon spends its
-		// single retry on it.
-		if err := ctx.Err(); errors.Is(err, context.Canceled) {
-			return "", err
-		}
-		if r.err != nil {
-			return "", fmt.Errorf("%w: %s: xdotool: %v", ErrNoWindow, c.module, r.err)
-		}
-		return r.id, nil
-
-	case <-c.done:
-		// The module exited before mapping a window: a missing GL context, a
-		// bad option, an absent data file. Report the tail of its stderr so
-		// the journal says something useful instead of just "no window".
-		return "", fmt.Errorf("%w: %s exited first (%v): %s",
-			ErrNoWindow, c.module, c.waitErr, c.stderr.String())
-
-	case <-ctx.Done():
-		if errors.Is(ctx.Err(), context.Canceled) {
-			return "", ctx.Err()
-		}
-		return "", fmt.Errorf("%w: %s mapped nothing within %v", ErrNoWindow, c.module, windowDeadline)
-	}
-}
-
-// firstWindowID picks a window ID out of xdotool's output.
-//
-// xdotool prints one decimal ID per line. A module normally maps exactly one
-// window; when it maps more, the first is the one that appeared first and is
-// the one wmctrl should act on.
-func firstWindowID(out string) (string, error) {
-	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		n, err := strconv.ParseUint(line, 10, 64)
-		if err != nil {
-			return "", fmt.Errorf("unparseable window id %q: %w", line, err)
-		}
-		// wmctrl -i parses with strtoul base 0, so hand it the unambiguous
-		// 0x form rather than relying on decimal being read as decimal.
-		return fmt.Sprintf("0x%08x", n), nil
-	}
-	return "", errors.New("xdotool printed no window id")
-}
-
-// fullscreen asks the window manager to make the window cover its monitor and
-// sit above everything, including the top bar.
-//
-// Mutter fullscreens a window on the monitor holding the centre of the window's
-// requested rectangle, so a child started with its monitor's -geometry lands
-// on that monitor. The top bar hides while the primary monitor has any
-// fullscreen window, and a fullscreen window keeps its place when focus moves
-// to another monitor's, so every child stays up.
-func (c *child) fullscreen(ctx context.Context, env []string, id string) error {
-	cmd := exec.CommandContext(ctx, "wmctrl", "-i", "-r", id, "-b", "add,fullscreen,above")
-	cmd.Env = env
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("window: wmctrl fullscreen/above on %s (%s): %w: %s",
-			id, c.module, err, strings.TrimSpace(string(out)))
-	}
-	return nil
 }
 
 // startUnclutter hides the pointer over the saver window, returning nil when
@@ -446,6 +350,10 @@ func (s *Saver) Stop() error {
 			wg.Go(c.stop)
 		}
 		wg.Wait()
+
+		// Only once every module is gone, so none of them is still drawing
+		// into a window that has just been destroyed.
+		s.screen.close()
 
 		var first int
 		if pids := s.PIDs(); len(pids) > 0 {

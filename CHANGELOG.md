@@ -16,8 +16,20 @@ All notable changes to this project are documented here. The format follows
 - On a multi-monitor desktop every monitor now gets the screensaver, not just one. Each
   monitor runs its own copy of the module, sized to that monitor, so mixed sizes and
   fractional scaling both work. `retrosaver run` prints one PID per monitor, and the
-  runtime PID file holds one per line. A single monitor behaves exactly as before. Thanks
-  to @christofdamian.
+  runtime PID file holds one per line. Thanks to @christofdamian.
+
+### Changed
+
+- `retrosaver run` now stays in the foreground while the module runs. Ctrl-C,
+  `retrosaver stop` from another shell, or the module exiting ends it.
+- `wmctrl` and `xdotool` are no longer dependencies. retrosaver creates the saver windows
+  itself.
+
+### Fixed
+
+- Modules that size themselves only once, such as `anemone`, drew into a 1280×720 corner
+  and left the rest of the screen black. Every module now starts in a window that is
+  already fullscreen.
 
 ## [0.2.4] - 2026-09-30
 

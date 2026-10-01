@@ -3,6 +3,7 @@
 package window
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -11,44 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
-
-func TestFirstWindowID(t *testing.T) {
-	tests := []struct {
-		name    string
-		in      string
-		want    string
-		wantErr bool
-	}{
-		// xdotool prints one decimal ID per line. wmctrl -i parses with
-		// strtoul base 0, so the 0x form is handed over unambiguously.
-		{name: "single id", in: "56623111\n", want: "0x03600007"},
-		{name: "no trailing newline", in: "56623111", want: "0x03600007"},
-		{name: "several ids takes the first", in: "56623111\n56623112\n", want: "0x03600007"},
-		{name: "blank lines skipped", in: "\n\n56623111\n", want: "0x03600007"},
-		{name: "surrounding whitespace", in: "  56623111  \n", want: "0x03600007"},
-		{name: "empty", in: "", wantErr: true},
-		{name: "whitespace only", in: "   \n\n", wantErr: true},
-		{name: "not a number", in: "banana\n", wantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := firstWindowID(tt.in)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("firstWindowID(%q) = %q, want an error", tt.in, got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("firstWindowID(%q) = %v", tt.in, err)
-			}
-			if got != tt.want {
-				t.Errorf("firstWindowID(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
-}
 
 func TestRingBufferKeepsTheTail(t *testing.T) {
 	r := newRingBuffer(8)
@@ -124,13 +89,72 @@ func TestReadPIDsMissingFile(t *testing.T) {
 	}
 }
 
-func TestModuleArgs(t *testing.T) {
-	if got, want := moduleArgs(nil), []string{"-window"}; !slices.Equal(got, want) {
-		t.Errorf("moduleArgs(nil) = %q, want %q: a single monitor must launch exactly as before", got, want)
+func TestWindowIDArgs(t *testing.T) {
+	if got, want := windowIDArgs(0x2000003), []string{"-window-id", "0x2000003"}; !slices.Equal(got, want) {
+		t.Errorf("windowIDArgs(0x2000003) = %q, want %q", got, want)
 	}
-	mon := &monitor{x: 3072, y: 0, width: 3840, height: 2160}
-	if got, want := moduleArgs(mon), []string{"-window", "-geometry", "3840x2160+3072+0"}; !slices.Equal(got, want) {
-		t.Errorf("moduleArgs(%+v) = %q, want %q", *mon, got, want)
+}
+
+func TestMonitorString(t *testing.T) {
+	m := monitor{x: 3072, y: 0, width: 3840, height: 2160}
+	if got, want := m.String(), "3840x2160+3072+0"; got != want {
+		t.Errorf("String() = %q, want %q", got, want)
+	}
+}
+
+// Done must fire on the first copy to exit, not the last: one copy quitting
+// is what ends `retrosaver run`, and waiting for every monitor's copy would
+// leave the others running with the run already over.
+func TestDoneClosesWhenAnyCopyExits(t *testing.T) {
+	running := &child{done: make(chan struct{})}
+	exited := &child{done: make(chan struct{})}
+	s := &Saver{children: []*child{running, exited}, done: make(chan struct{})}
+	s.watchChildren()
+
+	select {
+	case <-s.Done():
+		t.Fatal("Done() closed with every copy still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(exited.done)
+	select {
+	case <-s.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Done() still open after a copy exited")
+	}
+}
+
+// A copy that dies within the startup grace fails the launch, with its stderr,
+// whichever monitor it was on -- not only the first.
+func TestAwaitStartupReportsAnyCopyThatDies(t *testing.T) {
+	ok := &child{module: "atlantis", done: make(chan struct{}), stderr: newRingBuffer(stderrTail)}
+	dead := &child{module: "atlantis", done: make(chan struct{}), stderr: newRingBuffer(stderrTail)}
+	_, _ = dead.stderr.Write([]byte("couldn't find a GL visual"))
+	s := &Saver{module: "atlantis", children: []*child{ok, dead}, done: make(chan struct{})}
+	s.watchChildren()
+	close(dead.done)
+
+	err := s.awaitStartup(context.Background())
+	if !errors.Is(err, ErrNoWindow) || !strings.Contains(err.Error(), "GL visual") {
+		t.Errorf("awaitStartup() = %v, want ErrNoWindow quoting the dead copy's stderr", err)
+	}
+}
+
+func TestAwaitStartupPassesWhenEveryCopySurvives(t *testing.T) {
+	s := &Saver{children: []*child{{done: make(chan struct{})}}, done: make(chan struct{})}
+	s.watchChildren()
+	if err := s.awaitStartup(context.Background()); err != nil {
+		t.Errorf("awaitStartup() = %v, want nil", err)
+	}
+}
+
+func TestAwaitStartupReportsCancellation(t *testing.T) {
+	s := &Saver{children: []*child{{done: make(chan struct{})}}, done: make(chan struct{})}
+	s.watchChildren()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.awaitStartup(ctx); !errors.Is(err, context.Canceled) {
+		t.Errorf("awaitStartup() = %v, want context.Canceled so the daemon does not spend its retry", err)
 	}
 }
 

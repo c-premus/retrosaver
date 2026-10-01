@@ -26,8 +26,9 @@ tears everything down and re\-arms from zero.
 .TP
 .B Saver
 5 minutes idle by default. Launch a random display module fullscreen, always\-on\-top,
-with the pointer hidden. With more than one monitor, each monitor runs its own copy of
-the module, sized to that monitor. Every 5 minutes thereafter the module is replaced by another
+with the pointer hidden. Each monitor runs its own copy of the module, drawing in a
+window retrosaver has already made fullscreen on that monitor, so every module starts at
+its final size. Every 5 minutes thereafter the module is replaced by another
 one, chosen at random from those not yet shown this idle period. Switching modules is
 not a stage: it does not advance the sequence, and it stops at the lock threshold. See
 .BR CYCLE_AFTER .
@@ -60,12 +61,16 @@ and whenever the config file changes. See
 below.
 .TP
 .BI run " [module]"
-Launch one module fullscreen. Picks at random when
+Launch one module fullscreen on every monitor. Picks at random when
 .I module
 is omitted. Refuses to stack a second module over a running one. A module named
 explicitly is run even if
 .B EXCLUDE
-lists it.
+lists it. Stays in the foreground while the module runs, because the saver windows
+belong to this process: Ctrl\-C,
+.B retrosaver stop
+from another shell, or the module exiting ends it and clears the screen. Closing the
+terminal ends it too.
 .TP
 .BR stop " [" \-\-keep\-idle\-delay ]
 Tear down a running module and clear the runtime state. Safe at any time, and a clean
@@ -115,9 +120,6 @@ is set, so XWayland is reachable;
 .B org.gnome.Mutter.IdleMonitor
 answers on the session bus;
 .IP \(bu 2
-.BR wmctrl ,
-.B xdotool
-and
 .B unclutter\-xfixes
 (or
 .BR unclutter )

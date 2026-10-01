@@ -43,7 +43,7 @@ But the parts needed to rebuild the thin missing layer all work:
 | XScreenSaver **modules** as standalone programs | Ordinary X11 clients, run fine under XWayland |
 | Installing modules **without** the daemon | The data and gl packages only `Suggests:` `xscreensaver` |
 | Idle detection | `org.gnome.Mutter.IdleMonitor` D-Bus API |
-| Fullscreen and always-on-top for an XWayland window | Mutter implements EWMH for X11 clients, on whichever monitor the window was placed |
+| Fullscreen and always-on-top for an XWayland window | Mutter implements EWMH for X11 clients, so retrosaver can create one fullscreen window per monitor and run a module inside each |
 | Locking the session | `loginctl lock-session` hands off to GNOME's lock screen |
 | Blanking the display | GNOME's own `org.gnome.desktop.session idle-delay` |
 
@@ -83,8 +83,8 @@ sudo apt install ./retrosaver_<version>_amd64.deb
 retrosaver setup
 ```
 
-`apt` pulls the XScreenSaver module packages as dependencies, along with `wmctrl`,
-`xdotool` and `unclutter-xfixes`, which the fullscreen wrapper uses. The package also declares
+`apt` pulls the XScreenSaver module packages as dependencies, along with
+`unclutter-xfixes`, which hides the pointer. The package also declares
 `Conflicts: xscreensaver`, because the daemon is the broken component and would otherwise
 autostart and emit errors alongside this one.
 

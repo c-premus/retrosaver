@@ -319,10 +319,20 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	// The module outlives this process on purpose: `retrosaver run` hands the
-	// screen over and returns, and `retrosaver stop` takes it back.
 	fmt.Println(runningMessage(name, saver.PIDs()))
-	return nil
+
+	// The saver windows belong to this process and go when it exits, so run
+	// stays in the foreground until the module quits, `retrosaver stop` kills
+	// it from another shell, or this process is told to stop. SIGHUP is in the
+	// list because closing the terminal must not leave a module drawing into
+	// windows that no longer exist.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer stop()
+	select {
+	case <-saver.Done():
+	case <-ctx.Done():
+	}
+	return saver.Stop()
 }
 
 // runningMessage reports a launched module, naming every monitor's copy when
@@ -580,11 +590,6 @@ func preflight() error {
 // requireBinaries checks the external tools internal/window shells out to.
 func requireBinaries() error {
 	var missing []string
-	for _, bin := range []string{"wmctrl", "xdotool"} {
-		if _, err := exec.LookPath(bin); err != nil {
-			missing = append(missing, bin)
-		}
-	}
 	// Either name satisfies the pointer-hiding requirement: the
 	// unclutter-xfixes package installs unclutter-xfixes, not unclutter.
 	if _, err := exec.LookPath("unclutter-xfixes"); err != nil {

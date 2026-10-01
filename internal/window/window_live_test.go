@@ -3,12 +3,15 @@
 package window
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jezek/xgb"
 )
 
 // Live tests against a real GNOME session. Gated on RETROSAVER_LIVE so that
@@ -24,10 +27,10 @@ func requireLiveDisplay(t *testing.T) {
 	}
 }
 
-// TestLiveLaunchCoversEveryMonitor launches a module and checks that each
-// copy's window ends up exactly covering its monitor. The window manager is the
-// only judge of that, so the evidence is the geometry X reports afterwards, not
-// anything the launch itself returns.
+// TestLiveLaunchCoversEveryMonitor launches a module and checks that there is
+// one saver window per monitor, each exactly covering it, with a live copy of
+// the module drawing in it. The window manager is the only judge of the
+// geometry, so the evidence is what xwininfo reports afterwards.
 func TestLiveLaunchCoversEveryMonitor(t *testing.T) {
 	requireLiveDisplay(t)
 	const path = moduleBinDir + "anemone"
@@ -38,9 +41,14 @@ func TestLiveLaunchCoversEveryMonitor(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 
 	display := moduleDisplay()
-	mons, err := monitors(display)
+	conn, err := xgb.NewConnDisplay(display)
 	if err != nil {
-		t.Fatalf("monitors(%q) = %v", display, err)
+		t.Fatalf("connecting to %q: %v", display, err)
+	}
+	mons, err := monitors(conn)
+	conn.Close()
+	if err != nil {
+		t.Fatalf("monitors() = %v", err)
 	}
 	t.Logf("monitors: %+v", mons)
 
@@ -50,40 +58,34 @@ func TestLiveLaunchCoversEveryMonitor(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Stop() })
 
-	pids := s.PIDs()
-	if len(mons) < 2 {
-		if len(pids) != 1 {
-			t.Fatalf("one monitor, %d copies launched", len(pids))
-		}
-		return
+	if len(mons) == 0 {
+		t.Fatal("Xinerama reports no monitors")
 	}
-	if len(pids) != len(mons) {
-		t.Fatalf("%d monitors, %d copies launched", len(mons), len(pids))
+	if got := len(s.screen.windows); got != len(mons) {
+		t.Fatalf("%d monitors, %d saver windows", len(mons), got)
 	}
-	for i, pid := range pids {
-		want := mons[i]
-		// Fullscreen is applied asynchronously after wmctrl returns.
-		var got monitor
-		for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-			if got = windowGeometry(t, pid); got == want {
-				break
-			}
+	if got := len(s.PIDs()); got != len(mons) {
+		t.Fatalf("%d monitors, %d copies launched", len(mons), got)
+	}
+
+	// Give the modules time to fail, then insist every copy is still drawing.
+	time.Sleep(time.Second)
+	for i, c := range s.children {
+		if c.reaped() {
+			t.Errorf("copy %d exited (%v): %s", i, c.waitErr, c.stderr.String())
 		}
-		if got != want {
-			t.Errorf("copy %d (pid %d) covers %+v, want monitor %+v", i, pid, got, want)
+	}
+	for i, w := range s.screen.windows {
+		if got := windowGeometry(t, fmt.Sprintf("0x%x", uint32(w))); got != mons[i] {
+			t.Errorf("saver window %d covers %v, want monitor %v", i, got, mons[i])
 		}
 	}
 }
 
-// windowGeometry is the absolute rectangle of pid's visible window, as xwininfo
-// reports it.
-func windowGeometry(t *testing.T, pid int) monitor {
+// windowGeometry is window id's absolute rectangle, as xwininfo reports it --
+// an independent reading, not the one the launch itself relied on.
+func windowGeometry(t *testing.T, id string) monitor {
 	t.Helper()
-	out, err := exec.Command("xdotool", "search", "--onlyvisible", "--pid", strconv.Itoa(pid)).Output()
-	if err != nil {
-		t.Fatalf("xdotool search --pid %d: %v", pid, err)
-	}
-	id, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 	info, err := exec.Command("xwininfo", "-id", id).Output()
 	if err != nil {
 		t.Fatalf("xwininfo -id %s: %v", id, err)

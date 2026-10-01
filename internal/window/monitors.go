@@ -14,39 +14,22 @@ import (
 // Those are the coordinates that matter. With a scaled GNOME session Mutter
 // lays monitors out in logical pixels, while XWayland's X coordinates are that
 // layout multiplied by ceil(highest monitor scale) -- a 1536-pixel-wide logical
-// monitor at 125% reads as 3072 pixels to an X client. Mutter converts a
-// client's requested position from X to logical coordinates itself, so the
-// rectangles Xinerama reports are exactly what -geometry has to name.
+// monitor at 125% reads as 3072 pixels to an X client. Mutter converts an X
+// client's requested geometry to logical coordinates itself, so the rectangles
+// Xinerama reports are exactly what a saver window has to be created at.
 type monitor struct {
 	x, y          int
 	width, height int
 }
 
-// geometry is the monitor's rectangle as an X geometry string, WxH+X+Y.
-//
-// Passed to a module as -geometry, it makes Xt set USPosition, which Mutter
-// honours on initial placement instead of running its own placement. The window
-// therefore maps on this monitor, and a later EWMH fullscreen request
-// fullscreens it here: Mutter picks the monitor holding the centre of the
-// window's requested rectangle.
-func (m monitor) geometry() string {
-	return fmt.Sprintf("%dx%d+%d+%d", m.width, m.height, m.x, m.y)
-}
-
-// monitors reads the monitor layout from the Xinerama extension on display.
+// monitors reads the monitor layout from the Xinerama extension on conn.
 //
 // It returns the monitors in Xinerama order, which lists the primary first,
 // with exact duplicates dropped: a mirrored display is one piece of glass and
 // gets one module, not two stacked on top of each other. An inactive Xinerama
-// extension returns no monitors and no error; the caller treats that, like a
-// single monitor, as "one window, placed by the window manager".
-func monitors(display string) ([]monitor, error) {
-	conn, err := xgb.NewConnDisplay(display)
-	if err != nil {
-		return nil, fmt.Errorf("window: connecting to X display %q: %w", display, err)
-	}
-	defer conn.Close()
-
+// extension returns no monitors and no error; the caller then covers the root
+// window instead.
+func monitors(conn *xgb.Conn) ([]monitor, error) {
 	if err := xinerama.Init(conn); err != nil {
 		return nil, fmt.Errorf("window: Xinerama extension: %w", err)
 	}

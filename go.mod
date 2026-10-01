@@ -40,10 +40,11 @@ toolchain go1.27.1
 require github.com/godbus/dbus/v5 v5.2.2
 
 // github.com/jezek/xgb is the third dependency, used only by internal/window to
-// read the monitor layout from XWayland's Xinerama extension, in the X
-// coordinates a module's -geometry has to name. See docs/development.md: no tool
-// already depended on reports it, and a hand-written X client would need the
-// connection handshake and Xauthority cookie that xgb already does.
+// read the monitor layout from Xinerama and create the saver windows, which a
+// module must start in already fullscreen. See docs/development.md: no
+// command-line tool can create a window and keep it alive, and a hand-written X
+// client would need the connection handshake and Xauthority cookie that xgb
+// already does.
 require github.com/jezek/xgb v1.3.1
 
 // golang.org/x/sys is a direct dependency, imported by internal/watch for the
