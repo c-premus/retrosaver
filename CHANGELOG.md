@@ -11,6 +11,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A module that quits or crashes while it is on screen no longer leaves the monitors
+  black until the session locks. The daemon closes its windows and starts a different
+  module, up to three times per idle period; after that it leaves the desktop showing
+  until the lock stage or until you come back. `retrosaver stop` from another shell looks
+  the same to the daemon, so while the daemon is running it gets a replacement module too.
+
 ## [0.3.0] - 2026-10-01
 
 ### Added

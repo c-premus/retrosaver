@@ -33,6 +33,12 @@ import (
 // blanks on its next tick. retrosaver never touches DPMS itself.
 const blankIdleDelay = 10
 
+// maxRelaunches caps how many times one idle period replaces a module that
+// died on screen. A module that crashes just after its startup grace would
+// otherwise walk the whole selection, one window flash at a time; past the
+// cap the desktop is left showing until the next stage or user activity.
+const maxRelaunches = 3
+
 // The collaborators the state machine needs, named as interfaces so the
 // machine can be exercised headlessly. The real packages satisfy them
 // structurally and know nothing about these declarations.
@@ -49,7 +55,12 @@ type (
 	}
 
 	// saver is a module that has been launched and can be torn down.
-	saver interface{ Stop() error }
+	saver interface {
+		Stop() error
+		// Done is closed once the module exits, for any reason -- including
+		// Stop, so the daemon must stop watching a saver before stopping it.
+		Done() <-chan struct{}
+	}
 
 	// launcher picks and launches display modules.
 	launcher interface {
@@ -247,6 +258,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		case r := <-m.launched:
 			m.handleLaunch(r)
 
+		case <-m.currentDone:
+			m.onModuleExit()
+
 		case <-d.reloadC:
 			m.reload()
 		}
@@ -337,6 +351,11 @@ type machine struct {
 
 	current     saver
 	currentName string
+	// currentDone is current's Done channel, or nil when nothing is on
+	// screen. Run selects on it, and a nil channel never fires, so it must be
+	// cleared whenever current is: a saver the daemon stopped itself would
+	// otherwise read as one that died.
+	currentDone <-chan struct{}
 	blanked     bool
 	activeArmed bool
 
@@ -348,6 +367,9 @@ type machine struct {
 	used     []string
 	attempts int
 	cycles   int
+	// deaths counts modules that exited on screen this idle period, and is
+	// what holds relaunching to maxRelaunches.
+	deaths int
 
 	// fatal records a failure that leaves the daemon unable to do its job at
 	// all -- in practice, one that leaves it with no watches. Handlers are
@@ -735,6 +757,7 @@ func (m *machine) reset() {
 	m.used = nil
 	m.attempts = 0
 	m.cycles = 0
+	m.deaths = 0
 }
 
 // pick chooses a module that has not been shown yet this idle cycle.
@@ -862,6 +885,7 @@ func (m *machine) handleLaunch(r launchResult) {
 	}
 	m.current = r.saver
 	m.currentName = r.name
+	m.currentDone = r.saver.Done()
 	m.d.log.Info("screensaver running", "module", r.name)
 	m.d.trace("launch:ok:" + r.name)
 }
@@ -883,6 +907,7 @@ func (m *machine) stopSaver() {
 		m.cancel()
 		m.cancel = nil
 	}
+	m.currentDone = nil
 	if m.current != nil {
 		if err := m.current.Stop(); err != nil {
 			m.d.log.Error("stopping the module", "err", err)
@@ -890,6 +915,54 @@ func (m *machine) stopSaver() {
 		m.current = nil
 	}
 	m.currentName = ""
+}
+
+// onModuleExit handles the module on screen exiting by itself.
+//
+// Its windows outlive it -- retrosaver owns them -- so a dead module leaves a
+// black screen until the next stage, which is what this exists to prevent.
+// The windows are closed and another module goes up in their place.
+//
+// `retrosaver stop` from another shell kills the module the same way and is
+// indistinguishable from here, so it gets a replacement too. maxRelaunches
+// bounds that as well, and user activity, which stop usually comes with,
+// resets everything anyway.
+func (m *machine) onModuleExit() {
+	name := m.currentName
+	m.d.log.Warn("module exited while on screen", "module", name)
+	m.d.trace("module:exited:" + name)
+
+	// Close the windows, but not via stopSaver: that would also cancel a
+	// swap already in flight, and a swap landing is the best outcome here.
+	m.currentDone = nil
+	if err := m.current.Stop(); err != nil {
+		m.d.log.Error("stopping the exited module", "err", err)
+	}
+	m.current = nil
+	m.currentName = ""
+
+	switch {
+	case m.stage != stageSaver:
+		// Unreachable today, since the lock stage stops the module first. A
+		// relaunch past the saver stage would be wrong whatever the cause.
+		return
+	case m.cancel != nil:
+		// A swap is already starting a replacement; let it land.
+		return
+	case m.deaths >= maxRelaunches:
+		m.d.log.Warn("modules keep exiting, leaving the desktop until the next stage",
+			"relaunches", m.deaths)
+		m.d.trace("relaunch:capped")
+		return
+	case m.locked():
+		// Same rule as onSaver and onCycle: nothing goes up behind the shield.
+		m.d.trace("launch:suppressed")
+		return
+	}
+	m.deaths++
+	m.attempts = 0
+	m.d.log.Info("starting another module")
+	m.startLaunch()
 }
 
 // shutdown is the single teardown path, run from Run's defer. It is safe

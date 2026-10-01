@@ -464,6 +464,16 @@ needs a matching rule**, or it silently rots.
   daemon's single retry picks a different module and a failed swap leaves the outgoing
   module on screen. Copies are stopped concurrently, and the windows are destroyed only
   after every module has gone.
+- **A module that dies after the grace is replaced, at most three times per idle period.**
+  Its windows outlive it, so without this the monitors stay black until the lock stage.
+  `Run` selects on `machine.currentDone`, the running saver's `Done()` channel, and a
+  `Saver`'s `Done` closes on `Stop` as well as on death, so **every path that stops or
+  replaces `current` must clear `currentDone` too**, or the daemon's own stop reads as a
+  death. Missing it in `stopSaver` panics on the next select, which every lock test
+  catches. `onModuleExit` closes the dead windows itself rather than calling `stopSaver`,
+  because that would cancel a swap already in flight, and the swap landing is the best
+  outcome. `retrosaver stop` beside a running daemon is indistinguishable from a crash and
+  gets a replacement too; `maxRelaunches` bounds it.
 - **The PID file holds one PID per line, primary monitor first.** A single-line file from an
   older version reads the same way. A file with any line that is not a plausible PID is
   ignored whole rather than partly trusted. `clearStateFor` keys on the first PID.

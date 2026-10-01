@@ -130,18 +130,36 @@ func (f *fakeMonitor) removedWatches() []idle.WatchID {
 }
 
 // fakeSaver records whether it was stopped, and how often.
+//
+// Like window.Saver, its Done channel closes when it is stopped as well as
+// when it dies, because that is exactly what the daemon has to tell apart.
 type fakeSaver struct {
 	mu    sync.Mutex
 	name  string
 	stops int
+
+	done     chan struct{}
+	doneOnce sync.Once
+}
+
+func newFakeSaver(name string) *fakeSaver {
+	return &fakeSaver{name: name, done: make(chan struct{})}
 }
 
 func (s *fakeSaver) Stop() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.stops++
+	s.mu.Unlock()
+	s.exit()
 	return nil
 }
+
+func (s *fakeSaver) Done() <-chan struct{} { return s.done }
+
+// die models the module exiting by itself.
+func (s *fakeSaver) die() { s.exit() }
+
+func (s *fakeSaver) exit() { s.doneOnce.Do(func() { close(s.done) }) }
 
 func (s *fakeSaver) stopCount() int {
 	s.mu.Lock()
@@ -263,7 +281,7 @@ func (l *fakeLauncher) Launch(ctx context.Context, name string) (saver, error) {
 		return nil, err
 	}
 
-	s := &fakeSaver{name: name}
+	s := newFakeSaver(name)
 	l.mu.Lock()
 	l.savers = append(l.savers, s)
 	l.mu.Unlock()
@@ -1848,5 +1866,150 @@ func TestNoSwapWhileTheSessionIsLocked(t *testing.T) {
 	// The chain stops rather than re-arming: user activity is what restarts it.
 	if got := h.lau.saverAt(t, 0).stopCount(); got != 0 {
 		t.Errorf("the running module was stopped %d times, want 0", got)
+	}
+}
+
+// ---------------------------------------------------------------- module death
+
+func TestADeadModuleIsReplaced(t *testing.T) {
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.lau.names = []string{"atlantis", "flame"}
+		h.lau.honourAvoid = true
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	h.lau.saverAt(t, 0).die()
+	h.want("module:exited:atlantis")
+	h.want("launch:ok:flame")
+
+	// Stopping the dead saver is what closes its windows. Without it the
+	// black windows would stay up under the replacement's.
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 1 {
+		t.Errorf("dead module stopped %d times, want 1", got)
+	}
+	if got, want := h.lau.askedFor(), []string{"atlantis", "flame"}; !slices.Equal(got, want) {
+		t.Errorf("modules launched = %v, want %v", got, want)
+	}
+}
+
+func TestRelaunchingIsCappedPerIdlePeriod(t *testing.T) {
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.lau.names = []string{"a", "b", "c", "d", "e"}
+		h.lau.honourAvoid = true
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:a")
+	for i, next := range []string{"b", "c", "d"} {
+		h.lau.saverAt(t, i).die()
+		h.want("module:exited:" + h.lau.saverAt(t, i).name)
+		h.want("launch:ok:" + next)
+	}
+
+	h.lau.saverAt(t, maxRelaunches).die()
+	h.want("module:exited:d")
+	h.want("relaunch:capped")
+
+	// The lock stage must still run with nothing on screen.
+	h.fire(wLock, "watch:lock")
+	if got := h.lau.saverCount(); got != maxRelaunches+1 {
+		t.Errorf("launcher produced %d savers, want %d", got, maxRelaunches+1)
+	}
+	if got := h.sess.lockCount(); got != 1 {
+		t.Errorf("Lock called %d times, want 1", got)
+	}
+}
+
+func TestUserActivityResetsTheRelaunchCap(t *testing.T) {
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.lau.names = []string{"a", "b", "c", "d", "e"}
+		h.lau.honourAvoid = true
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:a")
+	for i, next := range []string{"b", "c", "d"} {
+		h.lau.saverAt(t, i).die()
+		h.want("module:exited:" + h.lau.saverAt(t, i).name)
+		h.want("launch:ok:" + next)
+	}
+	h.fire(wActive, "watch:active")
+
+	// A fresh idle period starts the pool and the cap over.
+	h.fire(wSaver2, "watch:saver")
+	h.want("launch:ok:a")
+	h.lau.saverAt(t, maxRelaunches+1).die()
+	h.want("module:exited:a")
+	h.want("launch:ok:b")
+}
+
+// Stopping the outgoing module on a swap closes its Done channel too. That
+// must not read as a death, or every swap would launch a second module.
+func TestASwapIsNotMistakenForADeath(t *testing.T) {
+	h := start(t, cyclingConfig(), func(h *harness) {
+		h.lau.names = []string{"atlantis", "flame", "ifs"}
+		h.lau.honourAvoid = true
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+	h.fire(wCycle, "watch:cycle")
+	h.want("launch:ok:flame")
+
+	// A spurious relaunch would put a trace tag ahead of this one.
+	h.fire(wLock, "watch:lock")
+	if got := len(h.lau.askedFor()); got != 2 {
+		t.Errorf("Launch called %d times, want 2", got)
+	}
+}
+
+func TestADeadModuleIsNotReplacedBehindALock(t *testing.T) {
+	h := start(t, defaultConfig(), func(h *harness) {
+		h.lau.names = []string{"atlantis", "flame"}
+		h.lau.honourAvoid = true
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	h.sess.setLocked(true)
+	h.lau.saverAt(t, 0).die()
+	h.want("module:exited:atlantis")
+	h.want("launch:suppressed")
+
+	if got := len(h.lau.askedFor()); got != 1 {
+		t.Errorf("Launch called %d times, want 1", got)
+	}
+	if got := h.lau.saverAt(t, 0).stopCount(); got != 1 {
+		t.Errorf("dead module stopped %d times, want 1: its windows must still close", got)
+	}
+}
+
+// A module dying while its replacement is still starting must not start a
+// second replacement, or cancel the one already on its way.
+func TestADeathDuringASwapLetsTheSwapLand(t *testing.T) {
+	release := make(chan struct{})
+	h := start(t, cyclingConfig(), func(h *harness) {
+		h.lau.names = []string{"atlantis", "flame", "ifs"}
+		h.lau.honourAvoid = true
+	})
+
+	h.fire(wSaver, "watch:saver")
+	h.want("launch:ok:atlantis")
+
+	h.lau.mu.Lock()
+	h.lau.release = release
+	h.lau.mu.Unlock()
+	h.fire(wCycle, "watch:cycle")
+
+	h.lau.saverAt(t, 0).die()
+	h.want("module:exited:atlantis")
+
+	close(release)
+	h.want("launch:ok:flame")
+	if got, want := h.lau.askedFor(), []string{"atlantis", "flame"}; !slices.Equal(got, want) {
+		t.Errorf("modules launched = %v, want %v", got, want)
 	}
 }

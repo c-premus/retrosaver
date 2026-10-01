@@ -171,7 +171,9 @@ journalctl --user -u retrosaver -f
 
 `retrosaver stop` also gives `idle-delay` back to GNOME, but only when the daemon is not
 running. While it runs the daemon owns that setting, so stopping a module you started by
-hand leaves it alone.
+hand leaves it alone. While the daemon runs, it treats a module that disappears, whether
+it crashed or `retrosaver stop` killed it, as one to replace, up to three times per idle
+period. Moving the mouse or pressing a key is what ends the screensaver.
 
 For more detail in the journal, set `Environment=RETROSAVER_LOG_LEVEL=debug` under
 `[Service]` with `systemctl --user edit retrosaver`, then restart the unit.
