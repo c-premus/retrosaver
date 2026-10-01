@@ -28,8 +28,10 @@ tears everything down and re\-arms from zero.
 5 minutes idle by default. Launch a random display module fullscreen, always\-on\-top,
 with the pointer hidden. Each monitor runs its own copy of the module, drawing in a
 window retrosaver has already made fullscreen on that monitor, so every module starts at
-its final size. Every 5 minutes thereafter the module is replaced by another
-one, chosen at random from those not yet shown this idle period. Switching modules is
+its final size. With
+.B MONITORS=different
+each monitor runs a different module instead. Every 5 minutes thereafter the module is
+replaced by another one, chosen at random from those not yet shown this idle period. Switching modules is
 not a stage: it does not advance the sequence, and it stops at the lock threshold. See
 .BR CYCLE_AFTER .
 Skipped entirely if the session is already locked: GNOME's lock screen sits above every
@@ -60,11 +62,14 @@ and whenever the config file changes. See
 .B SIGNALS
 below.
 .TP
-.BI run " [module]"
-Launch one module fullscreen on every monitor. Picks at random when
+.BI run " [module ...]"
+Launch a module fullscreen on every monitor. Picks at random when
 .I module
-is omitted. Refuses to stack a second module over a running one. A module named
-explicitly is run even if
+is omitted, one module for each monitor with
+.BR MONITORS=different .
+Several modules named are put on the monitors in order, primary first, starting over
+from the first when there are more monitors than names. Refuses to stack a second
+module over a running one. A module named explicitly is run even if
 .B EXCLUDE
 lists it. Stays in the foreground while the module runs, because the saver windows
 belong to this process: Ctrl\-C,
@@ -180,6 +185,16 @@ disables switching, leaving the module that started the saver stage up until the
 Modules already shown this idle period are not repeated; once every selectable module
 has been shown the set starts over. If only one module is selectable, nothing switches.
 .TP
+.B MONITORS
+What a second monitor shows.
+.B same
+(the default) runs one module, a copy on every monitor;
+.B different
+picks a different module for each. A switch changes every monitor at once. A module that
+quits while on screen is replaced on its own monitor, in the same window, up to three
+times per monitor per idle period; past that its monitor stays black until the next
+switch or stage. With fewer selectable modules than monitors, some repeat.
+.TP
 .B LOCK_AFTER
 Seconds after the screensaver starts before the session locks. Default 900.
 .B 0
@@ -199,7 +214,13 @@ assets, network access, or elevated capabilities and misbehave standalone.
 .B INCLUDE
 Optional. If non\-empty, pick only from this space\-separated list.
 .PP
-Durations are whole, non\-negative seconds. Unknown keys are ignored.
+Durations are whole, non\-negative seconds.
+.B MONITORS
+takes only
+.B same
+or
+.BR different .
+Unknown keys are ignored.
 .PP
 Changes take effect as soon as the file is saved: the daemon watches it with inotify and
 re-arms itself.
@@ -252,7 +273,7 @@ PIDs of the running module, one per line: one copy per monitor, primary first. E
 before being signalled, because the file can be stale after a crash and PIDs are recycled.
 .TP
 .I $XDG_RUNTIME_DIR/retrosaver.module
-Name of the running module.
+Name of the running module on each monitor, one per line in the same order as the PIDs.
 .TP
 .I $XDG_RUNTIME_DIR/retrosaver.unclutter.pid
 PID of the pointer\-hiding

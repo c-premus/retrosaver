@@ -27,6 +27,7 @@ func TestParseOverridesAndQuoting(t *testing.T) {
 SAVER_DELAY=15
 
 CYCLE_AFTER=7
+MONITORS="different"
 LOCK_AFTER=20
 BLANK_AFTER=10
 EXCLUDE="webcollage sonar"
@@ -41,6 +42,9 @@ INCLUDE='atlantis flame ifs'
 	}
 	if cfg.CycleAfter != 7*time.Second {
 		t.Errorf("CycleAfter = %v, want 7s", cfg.CycleAfter)
+	}
+	if !cfg.DifferentPerMonitor() {
+		t.Errorf("Monitors = %q, want different", cfg.Monitors)
 	}
 	if cfg.BlankAfter != 10*time.Second {
 		t.Errorf("BlankAfter = %v, want 10s", cfg.BlankAfter)
@@ -101,8 +105,25 @@ func TestZeroDisablesStages(t *testing.T) {
 	}
 }
 
+func TestMonitorsDefaultsToTheSameModule(t *testing.T) {
+	cfg := Defaults()
+	if cfg.Monitors != MonitorsSame || cfg.DifferentPerMonitor() {
+		t.Fatalf("Monitors = %q with the shipped defaults, want same", cfg.Monitors)
+	}
+	if err := parse(strings.NewReader("MONITORS=different\nMONITORS=same\n"), &cfg); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cfg.DifferentPerMonitor() {
+		t.Error("DifferentPerMonitor = true after MONITORS=same, want false")
+	}
+}
+
 func TestParseRejectsGarbage(t *testing.T) {
-	for _, in := range []string{"SAVER_DELAY=abc\n", "SAVER_DELAY=-5\n", "not an assignment\n"} {
+	for _, in := range []string{
+		"SAVER_DELAY=abc\n", "SAVER_DELAY=-5\n", "not an assignment\n",
+		// A typo must not silently fall back to one of the two modes.
+		"MONITORS=diferent\n", "MONITORS=\n", "MONITORS=Different\n",
+	} {
 		cfg := Defaults()
 		if err := parse(strings.NewReader(in), &cfg); err == nil {
 			t.Errorf("parse(%q) = nil error, want failure", in)

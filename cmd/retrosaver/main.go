@@ -143,7 +143,8 @@ Usage:
 
 Runtime commands:
   daemon              Run the idle state machine (started by the systemd user unit)
-  run [module]        Launch one module fullscreen; picks at random when omitted
+  run [module...]     Launch modules fullscreen, one per monitor in order;
+                      picks at random when omitted
   stop                Tear down a running module (safe at any time)
   list                Print the discovered, selectable modules
 
@@ -296,9 +297,9 @@ func cmdRun(args []string) error {
 	}
 
 	finder := modules.NewFinder()
-	name := fset.Arg(0)
-	if name == "" {
-		if name, err = finder.Pick(cfg.Include, cfg.Exclude); err != nil {
+	names := fset.Args()
+	if len(names) == 0 {
+		if names, err = pickForRun(finder, cfg); err != nil {
 			return err
 		}
 	} else {
@@ -309,17 +310,25 @@ func cmdRun(args []string) error {
 		if err != nil {
 			return err
 		}
-		if !slices.Contains(discovered, name) {
-			return fmt.Errorf(
-				"run: %q is not a display module on this system; `retrosaver list` shows what is", name)
+		for _, name := range names {
+			if !slices.Contains(discovered, name) {
+				return fmt.Errorf(
+					"run: %q is not a display module on this system; `retrosaver list` shows what is", name)
+			}
 		}
 	}
 
-	saver, err := window.Launch(finder.Path(name))
+	paths := make([]string, len(names))
+	for i, name := range names {
+		paths[i] = finder.Path(name)
+	}
+	// All or nothing, unlike the daemon: run replaces nothing, so a monitor
+	// left black by a module that would not start is not worth keeping.
+	saver, err := window.LaunchContext(context.Background(), paths...)
 	if err != nil {
 		return err
 	}
-	fmt.Println(runningMessage(name, saver.PIDs()))
+	fmt.Println(runningMessage(saver.Modules(), saver.PIDs()))
 
 	// The saver windows belong to this process and go when it exits, so run
 	// stays in the foreground until the module quits, `retrosaver stop` kills
@@ -335,17 +344,50 @@ func cmdRun(args []string) error {
 	return saver.Stop()
 }
 
-// runningMessage reports a launched module, naming every monitor's copy when
-// there is more than one.
-func runningMessage(name string, pids []int) string {
+// pickForRun chooses what a bare `retrosaver run` shows: one module, or with
+// MONITORS=different one per monitor, all different while the selection
+// allows it.
+func pickForRun(finder *modules.Finder, cfg config.Config) ([]string, error) {
+	n := 1
+	if cfg.DifferentPerMonitor() {
+		var err error
+		if n, err = window.Monitors(); err != nil {
+			return nil, err
+		}
+	}
+	var names []string
+	for range n {
+		name, err := finder.Pick(cfg.Include, append(slices.Clone(cfg.Exclude), names...))
+		if err != nil && len(names) > 0 {
+			// Fewer selectable modules than monitors: repeat one.
+			name, err = finder.Pick(cfg.Include, cfg.Exclude)
+		}
+		if err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+// runningMessage reports a launched saver, naming every monitor's module when
+// there is more than one monitor.
+func runningMessage(modules []string, pids []int) string {
 	if len(pids) == 1 {
-		return fmt.Sprintf("%s running (pid %d)", name, pids[0])
+		return fmt.Sprintf("%s running (pid %d)", modules[0], pids[0])
 	}
-	ids := make([]string, len(pids))
+	if !slices.ContainsFunc(modules, func(m string) bool { return m != modules[0] }) {
+		ids := make([]string, len(pids))
+		for i, p := range pids {
+			ids[i] = strconv.Itoa(p)
+		}
+		return fmt.Sprintf("%s running on %d monitors (pids %s)", modules[0], len(pids), strings.Join(ids, ", "))
+	}
+	each := make([]string, len(pids))
 	for i, p := range pids {
-		ids[i] = strconv.Itoa(p)
+		each[i] = fmt.Sprintf("%s (pid %d)", modules[i], p)
 	}
-	return fmt.Sprintf("%s running on %d monitors (pids %s)", name, len(pids), strings.Join(ids, ", "))
+	return "running on " + strconv.Itoa(len(pids)) + " monitors: " + strings.Join(each, ", ")
 }
 
 func cmdStop(args []string) error {
@@ -639,6 +681,10 @@ SAVER_DELAY=%d
 # one. 0 disables switching, leaving the first module up until the lock.
 CYCLE_AFTER=%d
 
+# What a second monitor shows: "same" runs one module on every monitor,
+# "different" picks a different module for each.
+MONITORS=%s
+
 # Seconds after the screensaver starts before the session locks. 0 disables.
 LOCK_AFTER=%d
 
@@ -655,6 +701,7 @@ INCLUDE="%s"
 `,
 		int(d.SaverDelay.Seconds()),
 		int(d.CycleAfter.Seconds()),
+		d.Monitors,
 		int(d.LockAfter.Seconds()),
 		int(d.BlankAfter.Seconds()),
 		strings.Join(d.Exclude, " "),

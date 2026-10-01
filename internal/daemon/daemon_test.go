@@ -3,11 +3,13 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/c-premus/retrosaver/internal/config"
 	"github.com/c-premus/retrosaver/internal/idle"
 	"github.com/c-premus/retrosaver/internal/modules"
+	"github.com/c-premus/retrosaver/internal/window"
 )
 
 // The tests drive the state machine through fakes and synchronise on the
@@ -140,10 +143,38 @@ type fakeSaver struct {
 
 	done     chan struct{}
 	doneOnce sync.Once
+
+	// exits is what Exits hands the daemon; dieOn feeds it. It is buffered
+	// so a test can report an exit without waiting for the daemon to read.
+	exits chan window.Exit
+	// replaced records Replace calls as "<monitor>:<module>", and
+	// replaceErr makes Replace fail for a named module.
+	replaced   []string
+	replaceErr map[string]error
 }
 
 func newFakeSaver(name string) *fakeSaver {
-	return &fakeSaver{name: name, done: make(chan struct{})}
+	return &fakeSaver{name: name, done: make(chan struct{}), exits: make(chan window.Exit, 8)}
+}
+
+func (s *fakeSaver) Exits() <-chan window.Exit { return s.exits }
+
+func (s *fakeSaver) Replace(i int, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.replaced = append(s.replaced, fmt.Sprintf("%d:%s", i, name))
+	return s.replaceErr[name]
+}
+
+// dieOn models one monitor's module exiting by itself.
+func (s *fakeSaver) dieOn(monitor int, module string) {
+	s.exits <- window.Exit{Monitor: monitor, Module: module}
+}
+
+func (s *fakeSaver) replacements() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.replaced)
 }
 
 func (s *fakeSaver) Stop() error {
@@ -200,6 +231,21 @@ type fakeLauncher struct {
 	// filters records SetFilters calls, so a reload test can prove the
 	// launcher was actually re-pointed rather than left on its stale copy.
 	filters [][2][]string
+	// monitors is what Monitors reports; zero reads as one. monitorsErr
+	// makes it fail instead.
+	monitors    int
+	monitorsErr error
+	// replaceErr is copied onto every saver the launcher produces.
+	replaceErr map[string]error
+}
+
+func (l *fakeLauncher) Monitors() (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.monitorsErr != nil {
+		return 0, l.monitorsErr
+	}
+	return max(l.monitors, 1), nil
 }
 
 func (l *fakeLauncher) SetFilters(include, exclude []string) {
@@ -264,7 +310,10 @@ func (l *fakeLauncher) Pick(avoid ...string) (string, error) {
 	return l.names[i], nil
 }
 
-func (l *fakeLauncher) Launch(ctx context.Context, name string) (saver, error) {
+// Launch records a set of modules as their names joined with "+", which is
+// also how the daemon's trace tags name them: one module reads as itself.
+func (l *fakeLauncher) Launch(ctx context.Context, names []string) (saver, error) {
+	name := strings.Join(names, "+")
 	l.mu.Lock()
 	l.asked = append(l.asked, name)
 	release := l.release
@@ -294,6 +343,7 @@ func (l *fakeLauncher) Launch(ctx context.Context, name string) (saver, error) {
 
 	s := newFakeSaver(name)
 	l.mu.Lock()
+	s.replaceErr = l.replaceErr
 	l.savers = append(l.savers, s)
 	l.mu.Unlock()
 	return s, nil
