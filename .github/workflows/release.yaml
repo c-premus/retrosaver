@@ -136,8 +136,9 @@ jobs:
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release ${TAG} already exists; reusing it."
-            # Refresh the notes too, so a re-run also repairs a release created
-            # before they came from the changelog.
+            # Refresh the notes too, so a re-run picks up a CHANGELOG section
+            # edited after the release. A tag that predates release-notes.sh
+            # runs its own older copy of this file, so set its notes by hand.
             gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
           else
             gh release create "$TAG" \
