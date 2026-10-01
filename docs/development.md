@@ -220,7 +220,10 @@ than a pointer to a file — but the rules it enforces apply to any change made 
 contributor will meet them as automated pull requests.
 
 **Renovate targets the default branch directly.** Non-major updates merge themselves once
-CI is green; **major updates always wait for a human**. New releases are held for three
+CI is green; **major updates wait for a human**, with one exception: staticcheck names its
+releases by year (`2026.2.1`), so each new year reads as a major, and it automerges like a
+minor instead. That keeps the linter current for a Go minor toolchain bump, which is held
+for review and would otherwise go red on a staticcheck too old to read the new Go. New releases are held for three
 days before an update is even proposed (`minimumReleaseAge`), so a compromised or
 immediately-yanked upload does not land here on its release day. Security advisories skip
 that wait.
