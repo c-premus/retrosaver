@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -65,17 +66,20 @@ const (
 // but nothing isolates a system-wide pkill.
 var pkill = pkillModules
 
-// Saver is a running module -- one process per monitor -- and the
+// Saver is a running saver -- one module process per monitor -- and the
 // pointer-hiding process shared by all of them.
 //
-// Every monitor runs its own copy of the same module, sized to that monitor,
-// which is how XScreenSaver itself covers several. Stretching one window across
-// all of them with EWMH _NET_WM_FULLSCREEN_MONITORS was tried and does not work
-// on a scaled GNOME session: Mutter maps Xinerama indices to its monitors by
-// comparing rectangles with no scale conversion, finds no match, and silently
-// clears any request naming a monitor other than the first.
+// Every monitor runs its own module process, sized to that monitor, which is
+// how XScreenSaver itself covers several. Usually it is the same module on
+// each; with MONITORS=different each monitor has its own. Stretching one
+// window across all of them with EWMH _NET_WM_FULLSCREEN_MONITORS was tried
+// and does not work on a scaled GNOME session: Mutter maps Xinerama indices to
+// its monitors by comparing rectangles with no scale conversion, finds no
+// match, and silently clears any request naming a monitor other than the
+// first.
 type Saver struct {
-	module   string
+	// children holds one module process per monitor, primary first. Replace
+	// swaps an entry; nothing else changes it after LaunchContext.
 	children []*child
 
 	// screen holds the windows the copies draw in. It is nil only on a Saver
@@ -83,7 +87,15 @@ type Saver struct {
 	screen *screen
 
 	// done is closed when any copy of the module exits. See Done.
-	done chan struct{}
+	done     chan struct{}
+	doneOnce sync.Once
+
+	// exits reports each module process that exits, one event per process.
+	// stopping is closed by Stop, so a saver being torn down reports nothing
+	// more and no reporting goroutine is left blocked on a send. Both are
+	// created by watchChildren.
+	exits    chan Exit
+	stopping chan struct{}
 
 	unclutter *exec.Cmd
 
@@ -100,6 +112,11 @@ type Saver struct {
 type child struct {
 	cmd    *exec.Cmd
 	module string
+	// monitor is the index of the window it draws in, primary first.
+	monitor int
+	// retired is set when Replace stops this process on purpose, so its exit
+	// is not reported as a death.
+	retired atomic.Bool
 
 	// done is closed once cmd has been reaped; waitErr is set before it is
 	// closed. It is a closed-channel broadcast rather than a value send
@@ -108,6 +125,18 @@ type child struct {
 	waitErr error
 
 	stderr *ringBuffer
+}
+
+// Exit reports a module process that exited while its saver was running.
+type Exit struct {
+	// Monitor is the index of the window it drew in, primary first: the index
+	// Replace takes.
+	Monitor int
+	Module  string
+	PID     int
+	Err     error
+	// Stderr is the tail of what it wrote to stderr, which usually says why.
+	Stderr string
 }
 
 // Launch starts the module at path on every monitor, each copy drawing in a
@@ -125,31 +154,56 @@ func Launch(path string) (*Saver, error) {
 // abandon a launch the moment the user comes back rather than letting a
 // module flash onto a screen the user is already looking at.
 //
-// A launch is all or nothing. If the module fails on any monitor, every copy
+// Monitor i runs paths[i % len(paths)]: one path puts the same module on every
+// monitor, and one path per monitor gives each its own.
+//
+// A launch is all or nothing. If a module fails on any monitor, every copy
 // is stopped and the error returned, so the daemon's retry tries a different
-// module and a failed swap leaves the outgoing module on screen. Each monitor
-// runs the same module, so a failure on one nearly always means a failure on
-// all of them anyway.
-func LaunchContext(ctx context.Context, path string) (*Saver, error) {
-	module := filepath.Base(path)
-	env := moduleEnv()
+// module and a failed swap leaves the outgoing module on screen. When each
+// monitor runs the same module, a failure on one nearly always means a failure
+// on all of them anyway.
+func LaunchContext(ctx context.Context, paths ...string) (*Saver, error) {
+	return launch(ctx, paths, (*Saver).awaitStartup)
+}
 
-	scr, err := openScreen(ctx, moduleDisplay(), module)
+// LaunchEach is LaunchContext for a launch that is not all or nothing, which
+// is what the daemon uses when each monitor picks its own module.
+//
+// It fails only when every monitor's module exits within the startup grace.
+// If some survive, it succeeds, and each module that failed is reported on
+// Exits straight away, so the caller can put something else in its window
+// with Replace while the other monitors keep what they have.
+func LaunchEach(ctx context.Context, paths ...string) (*Saver, error) {
+	return launch(ctx, paths, (*Saver).awaitAny)
+}
+
+func launch(ctx context.Context, paths []string, await func(*Saver, context.Context) error) (*Saver, error) {
+	if len(paths) == 0 {
+		return nil, errors.New("window: no module to launch")
+	}
+	env := moduleEnv()
+	names := make([]string, len(paths))
+	for i, p := range paths {
+		names[i] = filepath.Base(p)
+	}
+
+	scr, err := openScreen(ctx, moduleDisplay(), names)
 	if err != nil {
 		return nil, err
 	}
-	s := &Saver{module: module, screen: scr, done: make(chan struct{})}
-	for _, w := range scr.windows {
-		c, err := startChild(path, module, env, uint32(w))
+	s := &Saver{screen: scr, done: make(chan struct{})}
+	for i, w := range scr.windows {
+		c, err := startChild(paths[i%len(paths)], env, uint32(w))
 		if err != nil {
 			_ = s.Stop()
 			return nil, err
 		}
+		c.monitor = i
 		s.children = append(s.children, c)
 	}
 	s.watchChildren()
 
-	if err := s.awaitStartup(ctx); err != nil {
+	if err := await(s, ctx); err != nil {
 		_ = s.Stop()
 		return nil, err
 	}
@@ -160,7 +214,7 @@ func LaunchContext(ctx context.Context, path string) (*Saver, error) {
 	// already covers them; unclutter is belt and braces.
 	s.unclutter, s.unclutterDone = startUnclutter(env)
 
-	if err := writeState(s.PIDs(), module, pidOf(s.unclutter)); err != nil {
+	if err := writeState(s.PIDs(), s.Modules(), pidOf(s.unclutter)); err != nil {
 		// Non-fatal, but `retrosaver stop` from another shell needs these.
 		slog.Warn("writing runtime state", "err", err)
 	}
@@ -183,7 +237,7 @@ func (s *Saver) awaitStartup(ctx context.Context) error {
 					ErrNoWindow, c.module, c.waitErr, c.stderr.String())
 			}
 		}
-		return fmt.Errorf("%w: %s exited on startup", ErrNoWindow, s.module)
+		return fmt.Errorf("%w: %s exited on startup", ErrNoWindow, strings.Join(s.Modules(), ", "))
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-timer.C:
@@ -191,15 +245,145 @@ func (s *Saver) awaitStartup(ctx context.Context) error {
 	}
 }
 
-// watchChildren closes s.done as soon as any copy of the module exits.
-func (s *Saver) watchChildren() {
-	var once sync.Once
-	for _, c := range s.children {
-		go func() {
-			<-c.done
-			once.Do(func() { close(s.done) })
-		}()
+// awaitAny is awaitStartup for LaunchEach: the launch fails only if every
+// module exits within the grace. The ones that exited are already on their way
+// to Exits.
+func (s *Saver) awaitAny(ctx context.Context) error {
+	all, quit := make(chan struct{}), make(chan struct{})
+	defer close(quit)
+	go func() {
+		for _, c := range s.children {
+			select {
+			case <-c.done:
+			case <-quit:
+				return // the grace is over; nothing is waiting any more
+			}
+		}
+		close(all)
+	}()
+	timer := time.NewTimer(startupGrace)
+	defer timer.Stop()
+	select {
+	case <-all:
+		var errs []string
+		for _, c := range s.children {
+			errs = append(errs, fmt.Sprintf("%s (%v): %s", c.module, c.waitErr, c.stderr.String()))
+		}
+		return fmt.Errorf("%w: every module exited on startup: %s", ErrNoWindow, strings.Join(errs, "; "))
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
+}
+
+// watchChildren starts watching every module process: see watch.
+func (s *Saver) watchChildren() {
+	if s.exits == nil {
+		s.exits = make(chan Exit)
+	}
+	if s.stopping == nil {
+		s.stopping = make(chan struct{})
+	}
+	for _, c := range s.children {
+		s.watch(c)
+	}
+}
+
+// watch closes s.done once c exits, and reports the exit on s.exits unless the
+// saver is being stopped or c was retired by Replace.
+func (s *Saver) watch(c *child) {
+	go func() {
+		<-c.done
+		s.doneOnce.Do(func() { close(s.done) })
+		// Stop closes stopping before it signals anything, so a process it
+		// stopped is caught here. The select below cannot be relied on for
+		// that: with a reader waiting, both of its cases are ready.
+		if c.retired.Load() || closed(s.stopping) {
+			return
+		}
+		e := Exit{Monitor: c.monitor, Module: c.module, PID: pidOf(c.cmd), Err: c.waitErr}
+		if c.stderr != nil {
+			e.Stderr = c.stderr.String()
+		}
+		select {
+		case s.exits <- e:
+		case <-s.stopping:
+		}
+	}()
+}
+
+// Exits reports each module process that exits while the saver runs, with the
+// monitor it was on. Unlike Done it fires once per process, including for a
+// process Replace started, so a caller can keep each monitor going separately.
+// A process Stop stops is never reported.
+//
+// A caller that never reads it loses nothing: the reports are dropped when the
+// saver is stopped.
+func (s *Saver) Exits() <-chan Exit { return s.exits }
+
+// Replace puts the module at path on monitor i in place of what runs there,
+// leaving every other monitor alone. The window stays: the new module adopts
+// the same fullscreen window with -window-id, as XScreenSaver does when it
+// cycles, so nothing has to be mapped or fullscreened again.
+//
+// The previous process is stopped first if it is still running, and is not
+// reported on Exits. The new one is not given a startup grace here: if it
+// cannot run, it simply exits and is reported on Exits like any other.
+//
+// Replace must not race Stop. The daemon calls both from one goroutine.
+func (s *Saver) Replace(i int, path string) error {
+	if i < 0 || i >= len(s.children) {
+		return fmt.Errorf("window: no monitor %d to replace a module on", i)
+	}
+	if closed(s.stopping) {
+		return errors.New("window: replacing a module on a saver that is stopping")
+	}
+	old := s.children[i]
+	first := firstPID(s.PIDs())
+	old.retired.Store(true)
+	old.stop()
+
+	var w uint32
+	if s.screen != nil {
+		w = uint32(s.screen.windows[i])
+	}
+	c, err := startChild(path, moduleEnv(), w)
+	if err != nil {
+		// Leave the retired process in place; the slot is empty either way.
+		return err
+	}
+	c.monitor = i
+	s.children[i] = c
+	s.watch(c)
+
+	// Rewrite the runtime state while it still names this saver, so
+	// `retrosaver stop` finds the new process.
+	if pids := readPIDs(pidPath()); len(pids) > 0 && pids[0] == first {
+		if err := writeState(s.PIDs(), s.Modules(), pidOf(s.unclutter)); err != nil {
+			slog.Warn("writing runtime state", "err", err)
+		}
+	}
+	return nil
+}
+
+// Modules names the module on each monitor, primary first.
+func (s *Saver) Modules() []string {
+	if s == nil {
+		return nil
+	}
+	names := make([]string, len(s.children))
+	for i, c := range s.children {
+		names[i] = c.module
+	}
+	return names
+}
+
+func firstPID(pids []int) int {
+	if len(pids) == 0 {
+		return 0
+	}
+	return pids[0]
 }
 
 // Done is closed as soon as any copy of the module exits, for whatever reason:
@@ -215,8 +399,8 @@ func windowIDArgs(w uint32) []string {
 	return []string{"-window-id", fmt.Sprintf("0x%x", w)}
 }
 
-// startChild starts one copy of the module at path, drawing in window w.
-func startChild(path, module string, env []string, w uint32) (*child, error) {
+// startChild starts the module at path, drawing in window w.
+func startChild(path string, env []string, w uint32) (*child, error) {
 	cmd := exec.Command(path, windowIDArgs(w)...)
 	cmd.Env = env
 	// Own process group: a module may fork helpers, and stop must be able to
@@ -231,7 +415,7 @@ func startChild(path, module string, env []string, w uint32) (*child, error) {
 
 	c := &child{
 		cmd:    cmd,
-		module: module,
+		module: filepath.Base(path),
 		done:   make(chan struct{}),
 		stderr: newRingBuffer(stderrTail),
 	}
@@ -336,6 +520,12 @@ func (s *Saver) PIDs() []int {
 // from another shell.
 func (s *Saver) Stop() error {
 	s.stopOnce.Do(func() {
+		// Before anything is signalled, so the modules this stops are not
+		// reported as having died.
+		if s.stopping != nil {
+			close(s.stopping)
+		}
+
 		// unclutter first. It hides the pointer globally while it runs, so
 		// outliving the module would be a visible bug. Skip it once reaped,
 		// for the same PID-recycling reason as the module below.
@@ -355,11 +545,7 @@ func (s *Saver) Stop() error {
 		// into a window that has just been destroyed.
 		s.screen.close()
 
-		var first int
-		if pids := s.PIDs(); len(pids) > 0 {
-			first = pids[0]
-		}
-		s.stopErr = clearStateFor(first)
+		s.stopErr = clearStateFor(firstPID(s.PIDs()))
 	})
 	return s.stopErr
 }
@@ -540,15 +726,16 @@ func unclutterPIDPath() string { return filepath.Join(runtimeDir(), "retrosaver.
 
 // writeState records what is running, so `retrosaver stop` works from another
 // shell and after a daemon crash. The PID file holds one module PID per line,
-// primary monitor first.
-func writeState(pids []int, module string, unclutterPID int) error {
+// primary monitor first, and the module file one name per line in the same
+// order.
+func writeState(pids []int, modules []string, unclutterPID int) error {
 	lines := make([]string, len(pids))
 	for i, p := range pids {
 		lines[i] = strconv.Itoa(p)
 	}
 	var errs []error
 	errs = append(errs, writeFile(pidPath(), strings.Join(lines, "\n")))
-	errs = append(errs, writeFile(modulePath(), module))
+	errs = append(errs, writeFile(modulePath(), strings.Join(modules, "\n")))
 	if unclutterPID > 0 {
 		errs = append(errs, writeFile(unclutterPIDPath(), strconv.Itoa(unclutterPID)))
 	}
@@ -591,6 +778,7 @@ func clearState() error {
 
 // RunningModule reports the module named in the runtime state, if any. It is
 // how `retrosaver run` refuses to start a second saver over a running one.
+// When monitors run different modules, it names them all, primary first.
 func RunningModule() (string, bool) {
 	if !slices.ContainsFunc(readPIDs(pidPath()), func(pid int) bool {
 		return processMatches(pid, moduleBinDir)
@@ -601,7 +789,7 @@ func RunningModule() (string, bool) {
 	if err != nil {
 		return "", true // running, but we cannot name it
 	}
-	return strings.TrimSpace(string(b)), true
+	return strings.Join(strings.Fields(string(b)), ", "), true
 }
 
 // ringBuffer keeps the last n bytes written to it, so a failing module's

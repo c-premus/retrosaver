@@ -107,3 +107,57 @@ func windowGeometry(t *testing.T, id string) monitor {
 	}
 	return m
 }
+
+// TestLiveReplaceKeepsTheWindow is the MONITORS=different path: each monitor
+// gets its own module through LaunchEach, then Replace puts another module in
+// the primary monitor's window. The window must be the same one, still
+// covering its monitor, with the new module alive in it and every other
+// monitor's process untouched.
+func TestLiveReplaceKeepsTheWindow(t *testing.T) {
+	requireLiveDisplay(t)
+	paths := []string{moduleBinDir + "anemone", moduleBinDir + "flame"}
+	for _, p := range append(paths, moduleBinDir+"atlantis") {
+		if _, err := os.Stat(p); err != nil {
+			t.Skipf("%s not installed: %v", p, err)
+		}
+	}
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	s, err := LaunchEach(t.Context(), paths...)
+	if err != nil {
+		t.Fatalf("LaunchEach = %v", err)
+	}
+	t.Cleanup(func() { _ = s.Stop() })
+	t.Logf("modules: %v", s.Modules())
+
+	before := s.PIDs()
+	window := fmt.Sprintf("0x%x", uint32(s.screen.windows[0]))
+	if err := s.Replace(0, moduleBinDir+"atlantis"); err != nil {
+		t.Fatalf("Replace = %v", err)
+	}
+
+	time.Sleep(time.Second)
+	after := s.PIDs()
+	if after[0] == before[0] {
+		t.Errorf("monitor 0 still runs pid %d, want a new process", before[0])
+	}
+	if s.children[0].reaped() {
+		t.Errorf("the replacement exited (%v): %s", s.children[0].waitErr, s.children[0].stderr.String())
+	}
+	if got := s.Modules()[0]; got != "atlantis" {
+		t.Errorf("monitor 0 runs %s, want atlantis", got)
+	}
+	for i := 1; i < len(after); i++ {
+		if after[i] != before[i] {
+			t.Errorf("monitor %d's process changed from %d to %d; Replace must leave it alone", i, before[i], after[i])
+		}
+	}
+	if got := windowGeometry(t, window); got != s.screen.mons[0] {
+		t.Errorf("after Replace, window %s covers %v, want monitor %v", window, got, s.screen.mons[0])
+	}
+	select {
+	case e := <-s.Exits():
+		t.Errorf("Exits() reported %+v; the process Replace stopped is retired, not dead", e)
+	default:
+	}
+}

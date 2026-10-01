@@ -11,6 +11,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `MONITORS=different` puts a different module on each monitor. Every switch changes all
+  of them at once, and a module that quits is replaced on its own monitor while the
+  others keep running. The default, `MONITORS=same`, keeps one module on every monitor
+  as before. `retrosaver run` takes several module names too, one per monitor. Thanks
+  to @christofdamian for the idea.
+
 ## [0.4.0] - 2026-10-01
 
 ### Fixed

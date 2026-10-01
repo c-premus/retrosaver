@@ -131,6 +131,7 @@ overwritten. It is a commented copy of these defaults:
 ```sh
 SAVER_DELAY=300     # idle seconds before the screensaver starts
 CYCLE_AFTER=300     # seconds each module lasts before switching to another. 0 disables
+MONITORS=same       # "same" module on every monitor, or "different" for one each
 LOCK_AFTER=900      # seconds after the saver starts before locking. 0 disables locking and blanking
 BLANK_AFTER=120     # seconds after locking before the display powers off. 0 disables
 
@@ -142,7 +143,11 @@ EXCLUDE="webcollage vidwhacker glslideshow photopile carousel sonar"
 INCLUDE=""
 ```
 
-Values are whole seconds, and unknown keys are ignored. The file is parsed as
+Delays are whole seconds, and unknown keys are ignored.
+
+With `MONITORS=different` each monitor shows a module of its own, and every switch
+changes all of them at once. If one monitor's module quits, only that monitor gets a
+new one; the others carry on. The file is parsed as
 `KEY=value` lines and never run as a shell script.
 
 Changes take effect as soon as you save the file: the daemon watches it and re-arms
@@ -164,6 +169,7 @@ Useful commands:
 ```bash
 retrosaver list              # print the modules that would be picked from
 retrosaver run atlantis      # launch one module now, even one EXCLUDE lists
+retrosaver run atlantis flame   # one module per monitor, in monitor order
 retrosaver stop              # tear it down
 systemctl --user reload retrosaver   # re-read the config now
 journalctl --user -u retrosaver -f

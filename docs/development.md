@@ -435,9 +435,10 @@ needs a matching rule**, or it silently rots.
   exited, so the unit's own cleanup still restores. The check **fails toward restoring**:
   an unreadable `/proc` counts as no daemon, because `idle-delay` stuck at `0` with no
   daemon means no auto-lock at all. `--keep-idle-delay` skips the restore unconditionally.
-- **Every monitor runs its own copy of the module; one window is never stretched across
-  them.** EWMH `_NET_WM_FULLSCREEN_MONITORS` looks like the tool for spanning, and it is
-  silently ignored on any scaled GNOME session. With fractional scaling XWayland's
+- **Every monitor runs its own module process; one window is never stretched across
+  them.** It is the same module on each unless `MONITORS=different`. EWMH
+  `_NET_WM_FULLSCREEN_MONITORS` looks like the tool for spanning, and it is silently
+  ignored on any scaled GNOME session. With fractional scaling XWayland's
   coordinates are Mutter's logical layout multiplied by `ceil(highest monitor scale)`, and
   `meta_x11_display_ensure_xinerama_indices` matches Xinerama rectangles to monitors with
   no scale conversion — nothing matches, every monitor keeps index 0, and a request naming
@@ -487,7 +488,35 @@ needs a matching rule**, or it silently rots.
   ends with nothing on its way (capped, locked, retry exhausted, nothing to pick) calls
   `closeDead`. `retrosaver stop` beside a running daemon is indistinguishable from a crash
   and gets a replacement too; `maxRelaunches` bounds it.
-- **The PID file holds one PID per line, primary monitor first.** A single-line file from an
+- **With `MONITORS=different`, a death is made good on its own monitor, in the same
+  window.** `Saver.Replace(i, path)` starts the new module with `-window-id` on the window
+  the dead one drew in, which is what XScreenSaver does when it cycles. Nothing is
+  mapped or fullscreened again, so the 2938×1590 hazard above cannot arise. Measured
+  before building on it (reference host, 2026-10-01): `anemone` centred its drawing on
+  the middle of a reused 3072×1728 window, whether the window was fresh or had just held a
+  GL module, and `flame` and `atlantis` filled it whatever had come before. The cap is
+  per monitor (`monitorDeaths`), and a replacement that cannot run simply exits and comes
+  back as another death, so the same cap bounds startup failures. Swaps still change
+  the whole set, through an ordinary launch.
+- **A per-monitor saver is watched through `Exits()`, never `Done()`.** `Done` closes on
+  the first process to exit and stays closed, so it cannot report a second death on
+  another monitor. `handleLaunch` selects on `currentExits` when the set has more than one
+  module and on `currentDone` otherwise, and **`currentExits` must be cleared wherever
+  `currentDone` is**. `Saver` reports nothing for a process `Stop` stopped (it closes
+  `stopping` before signalling, and each reporter checks it before its `select`, because
+  with a reader waiting both cases of that `select` are ready), nor for one `Replace`
+  retired.
+- **`LaunchEach` is not all or nothing; `LaunchContext` still is.** The daemon uses
+  `LaunchEach` for a set of several modules: it fails only if every module exits within
+  the grace, and reports the rest on `Exits()` for `Replace` to make good.
+  `retrosaver run` keeps all or nothing, since it replaces nothing.
+- **The monitor count is read afresh for each launch** (`window.Monitors()`, one short X
+  connection, on the event loop), so a swap after a monitor is unplugged covers the
+  layout as it now is. That is why the swap-skip check compares the whole set, not its
+  first name.
+- **The PID file holds one PID per line, primary monitor first**, and the module file
+  one name per line in the same order. `Replace` rewrites both while they still name
+  its saver, so `retrosaver stop` finds the new process. A single-line file from an
   older version reads the same way. A file with any line that is not a plausible PID is
   ignored whole rather than partly trusted. `clearStateFor` keys on the first PID.
 - **Every PID read off disk is checked against `/proc/<pid>/cmdline` before being signalled.**

@@ -11,6 +11,10 @@
 // CYCLE_AFTER, so a long idle period is not fifteen minutes of the same
 // screensaver. A swap is not a stage: it does not advance the state machine,
 // and it stops at the lock threshold.
+//
+// With MONITORS=different every monitor gets a module of its own. A launch and
+// a swap still treat the set as one unit, but a module that dies on one
+// monitor is replaced on that monitor alone.
 package daemon
 
 import (
@@ -19,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/c-premus/retrosaver/internal/config"
@@ -37,6 +42,9 @@ const blankIdleDelay = 10
 // died on screen. A module that crashes just after its startup grace would
 // otherwise walk the whole selection, one window flash at a time; past the
 // cap the desktop is left showing until the next stage or user activity.
+//
+// With a module per monitor the cap is per monitor, and past it that monitor
+// stays black while the others carry on.
 const maxRelaunches = 3
 
 // The collaborators the state machine needs, named as interfaces so the
@@ -60,12 +68,23 @@ type (
 		// Done is closed once the module exits, for any reason -- including
 		// Stop, so the daemon must stop watching a saver before stopping it.
 		Done() <-chan struct{}
+		// Exits reports each monitor's module exiting, one event per
+		// process. It is what the daemon watches instead of Done when each
+		// monitor has its own module.
+		Exits() <-chan window.Exit
+		// Replace puts module name on monitor i, leaving the others alone.
+		Replace(i int, name string) error
 	}
 
 	// launcher picks and launches display modules.
 	launcher interface {
 		Pick(avoid ...string) (string, error)
-		Launch(ctx context.Context, name string) (saver, error)
+		// Launch puts names[i % len(names)] on monitor i. With more than one
+		// name, a module that fails on some monitors but not all is reported
+		// on the saver's Exits rather than failing the launch.
+		Launch(ctx context.Context, names []string) (saver, error)
+		// Monitors is how many monitors a launch covers.
+		Monitors() (int, error)
 		// SetFilters replaces the include/exclude lists used by Pick.
 		//
 		// This exists for config reload. The launcher holds its own copy of
@@ -205,12 +224,33 @@ func (l *realLauncher) SetFilters(include, exclude []string) {
 	l.include, l.exclude = include, exclude
 }
 
-func (l *realLauncher) Launch(ctx context.Context, name string) (saver, error) {
-	s, err := window.LaunchContext(ctx, l.finder.Path(name))
+func (l *realLauncher) Launch(ctx context.Context, names []string) (saver, error) {
+	paths := make([]string, len(names))
+	for i, n := range names {
+		paths[i] = l.finder.Path(n)
+	}
+	launch := window.LaunchContext
+	if len(paths) > 1 {
+		launch = window.LaunchEach
+	}
+	s, err := launch(ctx, paths...)
 	if err != nil {
 		return nil, err // avoid a typed-nil *window.Saver in the interface
 	}
-	return s, nil
+	return realSaver{s, l.finder}, nil
+}
+
+func (l *realLauncher) Monitors() (int, error) { return window.Monitors() }
+
+// realSaver adapts *window.Saver to saver: Replace takes a module name, and the
+// finder turns it into the path window needs.
+type realSaver struct {
+	*window.Saver
+	finder *modules.Finder
+}
+
+func (s realSaver) Replace(i int, name string) error {
+	return s.Saver.Replace(i, s.finder.Path(name))
 }
 
 type sessionController struct{}
@@ -289,6 +329,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		case <-m.currentDone:
 			m.onModuleExit()
 
+		case e := <-m.currentExits:
+			m.onCopyExit(e)
+
 		case locked, ok := <-locks:
 			if !ok {
 				// The system bus connection dropped. Losing this is not worth
@@ -362,7 +405,7 @@ func (k watchKind) String() string {
 
 type launchResult struct {
 	gen   uint64
-	name  string
+	names []string
 	saver saver
 	err   error
 
@@ -387,13 +430,18 @@ type machine struct {
 	cancel   context.CancelFunc
 	launched chan launchResult
 
-	current     saver
-	currentName string
+	current saver
+	// currentNames is the module on each monitor, primary first; it holds one
+	// name when every monitor runs the same module.
+	currentNames []string
 	// currentDone is current's Done channel, or nil when nothing is on
 	// screen. Run selects on it, and a nil channel never fires, so it must be
 	// cleared whenever current is: a saver the daemon stopped itself would
 	// otherwise read as one that died.
 	currentDone <-chan struct{}
+	// currentExits is current's Exits channel, used in place of currentDone
+	// when each monitor runs its own module. The same clearing rule applies.
+	currentExits <-chan window.Exit
 	// dead marks current as a module that has exited on screen and is
 	// waiting for a replacement to land before its windows are closed.
 	dead        bool
@@ -409,8 +457,10 @@ type machine struct {
 	attempts int
 	cycles   int
 	// deaths counts modules that exited on screen this idle period, and is
-	// what holds relaunching to maxRelaunches.
-	deaths int
+	// what holds relaunching to maxRelaunches. monitorDeaths does the same
+	// per monitor when each runs its own module.
+	deaths        int
+	monitorDeaths map[int]int
 
 	// fatal records a failure that leaves the daemon unable to do its job at
 	// all -- in practice, one that leaves it with no watches. Handlers are
@@ -755,6 +805,7 @@ func sameConfig(a, b config.Config) bool {
 		a.LockAfter == b.LockAfter &&
 		a.BlankAfter == b.BlankAfter &&
 		a.CycleAfter == b.CycleAfter &&
+		a.Monitors == b.Monitors &&
 		slices.Equal(a.Include, b.Include) &&
 		slices.Equal(a.Exclude, b.Exclude)
 }
@@ -799,38 +850,75 @@ func (m *machine) reset() {
 	m.attempts = 0
 	m.cycles = 0
 	m.deaths = 0
+	m.monitorDeaths = nil
 }
 
-// pick chooses a module that has not been shown yet this idle cycle.
+// pick chooses a module that has not been shown yet this idle cycle, and is
+// not one of also: the rest of the set being picked, or what the other
+// monitors are showing.
 //
 // Pick reports an exhausted pool and a genuinely empty selection identically
 // -- both come back as "none survived INCLUDE/EXCLUDE", because an avoid list
 // that swallows everything is indistinguishable from a config that does. So
 // the retry is what tells them apart: if anything has been shown, emptying the
 // pool and asking again must succeed unless there really is nothing there.
-func (m *machine) pick() (string, error) {
-	name, err := m.d.modules.Pick(m.used...)
+func (m *machine) pick(also ...string) (string, error) {
+	name, err := m.d.modules.Pick(append(slices.Clone(m.used), also...)...)
 	if err == nil {
 		return name, nil
 	}
-	if len(m.used) == 0 {
+	if len(m.used) == 0 && len(also) == 0 {
 		return "", err
 	}
 
 	// Every selectable module has been shown. Start the pool over, holding
 	// back only what is on screen so the next one still differs from it.
-	m.used = m.used[:0]
-	if m.currentName != "" {
-		m.used = append(m.used, m.currentName)
-	}
-	if name, err := m.d.modules.Pick(m.used...); err == nil {
+	m.used = append(m.used[:0], m.currentNames...)
+	if name, err := m.d.modules.Pick(append(slices.Clone(m.used), also...)...); err == nil {
 		return name, nil
+	}
+
+	// Fewer selectable modules than there are monitors: repeat one rather
+	// than leave a monitor without.
+	m.used = m.used[:0]
+	if len(also) > 0 {
+		if name, err := m.d.modules.Pick(also...); err == nil {
+			return name, nil
+		}
 	}
 
 	// One selectable module, and it is already running. Hand it back and let
 	// startLaunch recognise it and skip the swap.
-	m.used = m.used[:0]
 	return m.d.modules.Pick()
+}
+
+// pickSet chooses a module for each of n monitors, all different while the
+// selection allows it.
+func (m *machine) pickSet(n int) ([]string, error) {
+	names := make([]string, 0, n)
+	for range n {
+		name, err := m.pick(names...)
+		if err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+// monitors is how many modules a launch needs: one per monitor when each
+// picks its own, and one otherwise.
+func (m *machine) monitors() int {
+	if !m.d.cfg.DifferentPerMonitor() {
+		return 1
+	}
+	n, err := m.d.modules.Monitors()
+	if err != nil || n < 1 {
+		// One module on every monitor still covers them all.
+		m.d.log.Warn("counting monitors, putting the same module on each", "err", err)
+		return 1
+	}
+	return n
 }
 
 // startLaunch picks a module and launches it on a worker goroutine.
@@ -840,7 +928,7 @@ func (m *machine) pick() (string, error) {
 // module flashing onto the screen of someone who is already back at the
 // keyboard. The generation counter makes a late result harmless.
 func (m *machine) startLaunch() {
-	name, err := m.pick()
+	names, err := m.pickSet(m.monitors())
 	if err != nil {
 		// No module could be chosen. Do not abandon the cycle: idle-delay is
 		// 0, so returning here would leave the session with no auto-lock at
@@ -849,24 +937,24 @@ func (m *machine) startLaunch() {
 		m.d.trace("launch:unavailable")
 		return
 	}
-	if m.current != nil && !m.dead && name == m.currentName {
+	if m.current != nil && !m.dead && slices.Equal(names, m.currentNames) {
 		// Swapping a module for itself would tear down a perfectly good
 		// window and put an identical one back, with a gap in between. When
 		// only one module is selectable that is every single cycle, so this
 		// has to be a no-op rather than a flicker every CYCLE_AFTER.
-		m.d.log.Debug("cycle: nothing else to switch to, keeping the module", "module", name)
+		m.d.log.Debug("cycle: nothing else to switch to, keeping the module", "module", names)
 		m.d.trace("cycle:skipped")
 		return
 	}
-	m.used = append(m.used, name)
+	m.used = append(m.used, names...)
 	m.attempts++
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 	gen := m.gen
 	go func() {
-		s, err := m.d.modules.Launch(ctx, name)
-		m.launched <- launchResult{gen: gen, name: name, saver: s, err: err, cancel: cancel}
+		s, err := m.d.modules.Launch(ctx, names)
+		m.launched <- launchResult{gen: gen, names: names, saver: s, err: err, cancel: cancel}
 	}()
 }
 
@@ -900,9 +988,9 @@ func (m *machine) handleLaunch(r launchResult) {
 		// very differently from "the process would not start" when someone is
 		// working out why their screensaver is blank.
 		if errors.Is(r.err, window.ErrNoWindow) {
-			m.d.log.Warn("module started but mapped no window", "module", r.name, "err", r.err)
+			m.d.log.Warn("module started but mapped no window", "module", r.names, "err", r.err)
 		} else {
-			m.d.log.Warn("module failed to start", "module", r.name, "err", r.err)
+			m.d.log.Warn("module failed to start", "module", r.names, "err", r.err)
 		}
 		// Retry only when the module itself is at fault. A launch the daemon
 		// cancelled reports context.Canceled, and spending the single retry on
@@ -915,7 +1003,7 @@ func (m *machine) handleLaunch(r launchResult) {
 			// waiting for this launch to replace it; close its windows.
 			m.closeDead()
 		}
-		m.d.trace("launch:failed:" + r.name)
+		m.d.trace("launch:failed:" + strings.Join(r.names, "+"))
 		return
 	}
 
@@ -930,11 +1018,16 @@ func (m *machine) handleLaunch(r launchResult) {
 		}
 	}
 	m.current = r.saver
-	m.currentName = r.name
-	m.currentDone = r.saver.Done()
+	m.currentNames = slices.Clone(r.names)
+	if len(r.names) > 1 {
+		// Each monitor has its own module and is kept going on its own.
+		m.currentDone, m.currentExits = nil, r.saver.Exits()
+	} else {
+		m.currentDone, m.currentExits = r.saver.Done(), nil
+	}
 	m.dead = false
-	m.d.log.Info("screensaver running", "module", r.name)
-	m.d.trace("launch:ok:" + r.name)
+	m.d.log.Info("screensaver running", "module", strings.Join(r.names, ", "))
+	m.d.trace("launch:ok:" + strings.Join(r.names, "+"))
 }
 
 // retryable reports whether a failed launch is worth another module.
@@ -955,6 +1048,7 @@ func (m *machine) stopSaver() {
 		m.cancel = nil
 	}
 	m.currentDone = nil
+	m.currentExits = nil
 	m.dead = false
 	if m.current != nil {
 		if err := m.current.Stop(); err != nil {
@@ -962,7 +1056,7 @@ func (m *machine) stopSaver() {
 		}
 		m.current = nil
 	}
-	m.currentName = ""
+	m.currentNames = nil
 }
 
 // onLockChange handles the session's lock state changing under the daemon.
@@ -1012,7 +1106,7 @@ func (m *machine) onLockChange(locked bool) {
 // bounds that as well, and user activity, which stop usually comes with,
 // resets everything anyway.
 func (m *machine) onModuleExit() {
-	name := m.currentName
+	name := strings.Join(m.currentNames, "+")
 	m.d.log.Warn("module exited while on screen", "module", name)
 	m.d.trace("module:exited:" + name)
 
@@ -1058,7 +1152,62 @@ func (m *machine) closeDead() {
 		m.d.log.Error("stopping the exited module", "err", err)
 	}
 	m.current = nil
-	m.currentName = ""
+	m.currentNames = nil
+}
+
+// onCopyExit handles one monitor's module exiting by itself, when each monitor
+// runs its own: another module goes up on that monitor alone, in the same
+// window, and the other monitors are left as they are.
+//
+// A replacement that cannot run exits within moments and comes back here, so
+// the per-monitor cap bounds startup failures and later deaths alike. Past the
+// cap, or with nothing to replace it with, that monitor's window stays black
+// until the next swap, stage or user activity.
+func (m *machine) onCopyExit(e window.Exit) {
+	m.d.log.Warn("module exited while on screen",
+		"module", e.Module, "monitor", e.Monitor, "err", e.Err, "stderr", e.Stderr)
+	m.d.trace(fmt.Sprintf("module:exited:%d:%s", e.Monitor, e.Module))
+
+	for {
+		switch {
+		case m.stage != stageSaver:
+			// Unreachable today, since the lock stage stops the saver first.
+			return
+		case m.cancel != nil:
+			// A swap is already putting up a whole new set; let it land.
+			return
+		case m.monitorDeaths[e.Monitor] >= maxRelaunches:
+			m.d.log.Warn("modules keep exiting on this monitor, leaving it black until the next swap or stage",
+				"monitor", e.Monitor, "relaunches", m.monitorDeaths[e.Monitor])
+			m.d.trace("relaunch:capped")
+			return
+		case m.locked():
+			// Same rule as onSaver and onCycle: nothing goes up behind the shield.
+			m.d.trace("launch:suppressed")
+			return
+		}
+		if m.monitorDeaths == nil {
+			m.monitorDeaths = make(map[int]int)
+		}
+		m.monitorDeaths[e.Monitor]++
+
+		name, err := m.pick(m.currentNames...)
+		if err != nil {
+			m.d.log.Error("no module available to replace the one that exited", "err", err)
+			m.d.trace("launch:unavailable")
+			return
+		}
+		m.used = append(m.used, name)
+		if err := m.current.Replace(e.Monitor, name); err != nil {
+			// Could not even start it; count it and try another.
+			m.d.log.Warn("module failed to start", "module", name, "monitor", e.Monitor, "err", err)
+			continue
+		}
+		m.currentNames[e.Monitor] = name
+		m.d.log.Info("replaced the module on one monitor", "monitor", e.Monitor, "module", name)
+		m.d.trace(fmt.Sprintf("relaunch:%d:%s", e.Monitor, name))
+		return
+	}
 }
 
 // shutdown is the single teardown path, run from Run's defer. It is safe

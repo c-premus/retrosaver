@@ -31,11 +31,24 @@ type Config struct {
 	// swaps to another one. Zero disables cycling, leaving the module that
 	// started the saver stage up until the lock stage or user activity.
 	CycleAfter time.Duration
+	// Monitors chooses whether every monitor shows the same module or each
+	// picks its own.
+	Monitors MonitorMode
 	// Exclude lists module names never to pick.
 	Exclude []string
 	// Include, when non-empty, restricts selection to these modules.
 	Include []string
 }
+
+// MonitorMode is the MONITORS setting: what each monitor shows.
+type MonitorMode string
+
+const (
+	// MonitorsSame runs one module, a copy on every monitor.
+	MonitorsSame MonitorMode = "same"
+	// MonitorsDifferent picks a different module for each monitor.
+	MonitorsDifferent MonitorMode = "different"
+)
 
 // Defaults returns the shipped defaults, matching config/retrosaver.conf.example.
 func Defaults() Config {
@@ -44,6 +57,7 @@ func Defaults() Config {
 		LockAfter:  900 * time.Second,
 		BlankAfter: 120 * time.Second,
 		CycleAfter: 300 * time.Second,
+		Monitors:   MonitorsSame,
 		Exclude: []string{
 			"webcollage", "vidwhacker", "glslideshow",
 			"photopile", "carousel", "sonar",
@@ -61,6 +75,9 @@ func (c Config) BlankEnabled() bool { return c.LockAfter > 0 && c.BlankAfter > 0
 
 // CycleEnabled reports whether the saver swaps modules while it runs.
 func (c Config) CycleEnabled() bool { return c.CycleAfter > 0 }
+
+// DifferentPerMonitor reports whether each monitor picks its own module.
+func (c Config) DifferentPerMonitor() bool { return c.Monitors == MonitorsDifferent }
 
 // UserConfigPath returns ~/.config/retrosaver/retrosaver.conf, honouring
 // XDG_CONFIG_HOME.
@@ -142,6 +159,14 @@ func parse(r io.Reader, cfg *Config) error {
 				return fmt.Errorf("line %d: CYCLE_AFTER: %w", line, err)
 			}
 			cfg.CycleAfter = d
+		case "MONITORS":
+			switch m := MonitorMode(value); m {
+			case MonitorsSame, MonitorsDifferent:
+				cfg.Monitors = m
+			default:
+				return fmt.Errorf("line %d: MONITORS: want %q or %q, got %q",
+					line, MonitorsSame, MonitorsDifferent, value)
+			}
 		case "EXCLUDE":
 			cfg.Exclude = strings.Fields(value)
 		case "INCLUDE":

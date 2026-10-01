@@ -5,6 +5,7 @@ package window
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -130,13 +131,147 @@ func TestAwaitStartupReportsAnyCopyThatDies(t *testing.T) {
 	ok := &child{module: "atlantis", done: make(chan struct{}), stderr: newRingBuffer(stderrTail)}
 	dead := &child{module: "atlantis", done: make(chan struct{}), stderr: newRingBuffer(stderrTail)}
 	_, _ = dead.stderr.Write([]byte("couldn't find a GL visual"))
-	s := &Saver{module: "atlantis", children: []*child{ok, dead}, done: make(chan struct{})}
+	s := &Saver{children: []*child{ok, dead}, done: make(chan struct{})}
 	s.watchChildren()
 	close(dead.done)
 
 	err := s.awaitStartup(context.Background())
 	if !errors.Is(err, ErrNoWindow) || !strings.Contains(err.Error(), "GL visual") {
 		t.Errorf("awaitStartup() = %v, want ErrNoWindow quoting the dead copy's stderr", err)
+	}
+}
+
+// LaunchEach's grace is the other way round: one survivor is enough, because
+// the daemon replaces the failed monitor's module on its own.
+func TestAwaitAnyPassesWhileOneCopySurvives(t *testing.T) {
+	ok := &child{module: "atlantis", done: make(chan struct{}), stderr: newRingBuffer(stderrTail)}
+	dead := &child{module: "flame", monitor: 1, done: make(chan struct{}), stderr: newRingBuffer(stderrTail)}
+	s := &Saver{children: []*child{ok, dead}, done: make(chan struct{})}
+	s.watchChildren()
+	close(dead.done)
+
+	if err := s.awaitAny(context.Background()); err != nil {
+		t.Fatalf("awaitAny() = %v, want nil with one copy still running", err)
+	}
+	select {
+	case e := <-s.Exits():
+		if e.Monitor != 1 || e.Module != "flame" {
+			t.Errorf("Exits() = %+v, want flame on monitor 1", e)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the copy that died on startup was never reported on Exits()")
+	}
+}
+
+func TestAwaitAnyFailsWhenEveryCopyDies(t *testing.T) {
+	a := &child{module: "atlantis", done: make(chan struct{}), stderr: newRingBuffer(stderrTail)}
+	b := &child{module: "flame", monitor: 1, done: make(chan struct{}), stderr: newRingBuffer(stderrTail)}
+	_, _ = b.stderr.Write([]byte("no such visual"))
+	s := &Saver{children: []*child{a, b}, done: make(chan struct{})}
+	s.watchChildren()
+	close(a.done)
+	close(b.done)
+
+	err := s.awaitAny(context.Background())
+	if !errors.Is(err, ErrNoWindow) || !strings.Contains(err.Error(), "no such visual") {
+		t.Errorf("awaitAny() = %v, want ErrNoWindow quoting the stderr", err)
+	}
+}
+
+// A saver being stopped must report nothing: the daemon would otherwise read
+// its own teardown as a module dying and put another one up.
+func TestExitsIsSilentOnceStopBegins(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	c := &child{done: make(chan struct{})}
+	s := &Saver{children: []*child{c}, done: make(chan struct{})}
+	s.watchChildren()
+	_ = s.Stop()
+	close(c.done)
+
+	select {
+	case e := <-s.Exits():
+		t.Fatalf("Exits() reported %+v after Stop", e)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// sleeperModule writes a stand-in module that ignores its arguments and runs
+// until it is signalled, and returns its path.
+func sleeperModule(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Replace changes one monitor's module and nothing else, and keeps the runtime
+// state pointing at what is really running, or `retrosaver stop` from another
+// shell would miss the new process.
+func TestReplaceSwapsOneMonitorAndRewritesTheState(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	s := reapedSaver(4321, 4323)
+	s.children[0].module, s.children[1].module = "atlantis", "flame"
+	s.children[1].monitor = 1
+	s.done = make(chan struct{})
+	s.watchChildren()
+	// Drain what the two already-reaped stand-ins report.
+	for range 2 {
+		<-s.Exits()
+	}
+	if err := writeState(s.PIDs(), s.Modules(), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Replace(1, sleeperModule(t, "coral")); err != nil {
+		t.Fatalf("Replace() = %v", err)
+	}
+	defer s.Stop()
+
+	pids := s.PIDs()
+	if len(pids) != 2 || pids[0] != 4321 || pids[1] == 4323 {
+		t.Fatalf("PIDs() = %v, want monitor 0 untouched and a new process on monitor 1", pids)
+	}
+	if got := s.Modules(); !slices.Equal(got, []string{"atlantis", "coral"}) {
+		t.Errorf("Modules() = %v, want [atlantis coral]", got)
+	}
+	if got, want := readTrimmed(t, pidPath()), fmt.Sprintf("4321\n%d", pids[1]); got != want {
+		t.Errorf("pid file = %q, want %q", got, want)
+	}
+	if got := readTrimmed(t, modulePath()); got != "atlantis\ncoral" {
+		t.Errorf("module file = %q, want one name per line", got)
+	}
+}
+
+// A process Replace stops on purpose is retired, not dead: reporting it would
+// make the daemon replace the replacement.
+func TestReplaceDoesNotReportTheProcessItStops(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	s := reapedSaver(4321)
+	s.done = make(chan struct{})
+	s.watchChildren()
+	<-s.Exits()
+
+	path := sleeperModule(t, "coral")
+	if err := s.Replace(0, path); err != nil {
+		t.Fatalf("Replace() = %v", err)
+	}
+	defer s.Stop()
+	if err := s.Replace(0, path); err != nil {
+		t.Fatalf("second Replace() = %v", err)
+	}
+	select {
+	case e := <-s.Exits():
+		t.Fatalf("Exits() reported %+v for a process Replace retired", e)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestReplaceRefusesAMonitorThatDoesNotExist(t *testing.T) {
+	s := reapedSaver(4321)
+	if err := s.Replace(1, "/bin/true"); err == nil {
+		t.Error("Replace(1) on a one-monitor saver = nil, want an error")
 	}
 }
 
@@ -226,7 +361,7 @@ func TestWriteAndClearState(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 
-	if err := writeState([]int{4321, 4323}, "atlantis", 4322); err != nil {
+	if err := writeState([]int{4321, 4323}, []string{"atlantis"}, 4322); err != nil {
 		t.Fatalf("writeState() = %v", err)
 	}
 	if got := readTrimmed(t, pidPath()); got != "4321\n4323" {
@@ -257,7 +392,7 @@ func TestWriteStateSkipsAbsentUnclutter(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 
-	if err := writeState([]int{4321}, "flame", 0); err != nil {
+	if err := writeState([]int{4321}, []string{"flame"}, 0); err != nil {
 		t.Fatalf("writeState() = %v", err)
 	}
 	if _, err := os.Stat(unclutterPIDPath()); !errors.Is(err, os.ErrNotExist) {
@@ -284,7 +419,7 @@ func reapedSaver(pids ...int) *Saver {
 func TestStopLeavesANewerSaversStateAlone(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 
-	if err := writeState([]int{9001, 9003}, "coral", 9002); err != nil {
+	if err := writeState([]int{9001, 9003}, []string{"coral"}, 9002); err != nil {
 		t.Fatalf("writeState() = %v", err)
 	}
 	if err := reapedSaver(4321, 4323).Stop(); err != nil {
@@ -306,7 +441,7 @@ func TestStopLeavesANewerSaversStateAlone(t *testing.T) {
 func TestStopClearsItsOwnState(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 
-	if err := writeState([]int{4321, 4323}, "ifs", 4322); err != nil {
+	if err := writeState([]int{4321, 4323}, []string{"ifs"}, 4322); err != nil {
 		t.Fatalf("writeState() = %v", err)
 	}
 	if err := reapedSaver(4321, 4323).Stop(); err != nil {

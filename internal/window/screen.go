@@ -45,12 +45,13 @@ type screen struct {
 
 // openScreen creates one fullscreen, always-on-top window per monitor on
 // display and waits until the window manager has placed each one over its
-// monitor. module only names the windows.
+// monitor. modules only names the windows: monitor i's is named after
+// modules[i % len(modules)], the module that will draw in it.
 //
 // A window the window manager never manages within windowDeadline is an error.
 // A managed window that does not cover its monitor exactly is logged and kept:
 // a module drawing slightly short of an edge beats no screensaver at all.
-func openScreen(ctx context.Context, display, module string) (*screen, error) {
+func openScreen(ctx context.Context, display string, modules []string) (*screen, error) {
 	conn, err := xgb.NewConnDisplay(display)
 	if err != nil {
 		return nil, fmt.Errorf("window: connecting to X display %q: %w", display, err)
@@ -58,16 +59,9 @@ func openScreen(ctx context.Context, display, module string) (*screen, error) {
 	s := &screen{conn: conn}
 
 	root := xproto.Setup(conn).DefaultScreen(conn)
-	s.mons, err = monitors(conn)
-	if err != nil {
-		// Covering the whole X screen beats covering nothing.
-		slog.Warn("reading the monitor layout; covering the whole screen", "err", err)
-	}
-	if len(s.mons) == 0 {
-		s.mons = []monitor{{width: int(root.WidthInPixels), height: int(root.HeightInPixels)}}
-	}
+	s.mons = layout(conn, root)
 
-	if err := s.create(root, module); err != nil {
+	if err := s.create(root, modules); err != nil {
 		s.close()
 		return nil, err
 	}
@@ -78,8 +72,34 @@ func openScreen(ctx context.Context, display, module string) (*screen, error) {
 	return s, nil
 }
 
+// layout is the monitors to cover: Xinerama's, or the whole X screen when
+// those cannot be read.
+func layout(conn *xgb.Conn, root *xproto.ScreenInfo) []monitor {
+	mons, err := monitors(conn)
+	if err != nil {
+		// Covering the whole X screen beats covering nothing.
+		slog.Warn("reading the monitor layout; covering the whole screen", "err", err)
+	}
+	if len(mons) == 0 {
+		mons = []monitor{{width: int(root.WidthInPixels), height: int(root.HeightInPixels)}}
+	}
+	return mons
+}
+
+// Monitors reports how many monitors a saver would cover: one window, and one
+// module, per monitor. The daemon asks before a launch so it can pick a module
+// for each.
+func Monitors() (int, error) {
+	conn, err := xgb.NewConnDisplay(moduleDisplay())
+	if err != nil {
+		return 0, fmt.Errorf("window: connecting to X display %q: %w", moduleDisplay(), err)
+	}
+	defer conn.Close()
+	return len(layout(conn, xproto.Setup(conn).DefaultScreen(conn))), nil
+}
+
 // create makes and maps one window per monitor.
-func (s *screen) create(root *xproto.ScreenInfo, module string) error {
+func (s *screen) create(root *xproto.ScreenInfo, modules []string) error {
 	atoms, err := internAtoms(s.conn,
 		"_NET_WM_STATE", "_NET_WM_STATE_FULLSCREEN", "_NET_WM_STATE_ABOVE",
 		"_NET_WM_NAME", "UTF8_STRING")
@@ -100,8 +120,8 @@ func (s *screen) create(root *xproto.ScreenInfo, module string) error {
 	xproto.CreateCursor(s.conn, s.cursor, pix, pix, 0, 0, 0, 0, 0, 0, 0, 0)
 	xproto.FreePixmap(s.conn, pix)
 
-	name := "retrosaver: " + module
-	for _, m := range s.mons {
+	for i, m := range s.mons {
+		name := "retrosaver: " + modules[i%len(modules)]
 		w, err := xproto.NewWindowId(s.conn)
 		if err != nil {
 			return fmt.Errorf("window: allocating a window id: %w", err)

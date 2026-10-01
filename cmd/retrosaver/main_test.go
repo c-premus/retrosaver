@@ -45,6 +45,9 @@ func TestDefaultConfigFileRoundTripsThroughTheParser(t *testing.T) {
 	if got.CycleAfter != want.CycleAfter {
 		t.Errorf("CycleAfter = %v, want %v", got.CycleAfter, want.CycleAfter)
 	}
+	if got.Monitors != want.Monitors {
+		t.Errorf("Monitors = %q, want %q", got.Monitors, want.Monitors)
+	}
 	if !slices.Equal(got.Exclude, want.Exclude) {
 		t.Errorf("Exclude = %v, want %v", got.Exclude, want.Exclude)
 	}
@@ -74,6 +77,9 @@ func TestPackagedExampleAgreesWithDefaults(t *testing.T) {
 		t.Errorf("example delays = %v/%v/%v/%v, defaults = %v/%v/%v/%v",
 			got.SaverDelay, got.LockAfter, got.BlankAfter, got.CycleAfter,
 			want.SaverDelay, want.LockAfter, want.BlankAfter, want.CycleAfter)
+	}
+	if got.Monitors != want.Monitors {
+		t.Errorf("example MONITORS = %q, defaults = %q", got.Monitors, want.Monitors)
 	}
 	if !slices.Equal(got.Exclude, want.Exclude) {
 		t.Errorf("example EXCLUDE = %v, defaults = %v", got.Exclude, want.Exclude)
@@ -387,8 +393,14 @@ func TestRunningMessage(t *testing.T) {
 		{[]int{4321, 4323}, "atlantis running on 2 monitors (pids 4321, 4323)"},
 	}
 	for _, tt := range tests {
-		if got := runningMessage("atlantis", tt.pids); got != tt.want {
+		modules := slices.Repeat([]string{"atlantis"}, len(tt.pids))
+		if got := runningMessage(modules, tt.pids); got != tt.want {
 			t.Errorf("runningMessage(%v) = %q, want %q", tt.pids, got, tt.want)
 		}
+	}
+
+	got := runningMessage([]string{"atlantis", "flame"}, []int{4321, 4323})
+	if want := "running on 2 monitors: atlantis (pid 4321), flame (pid 4323)"; got != want {
+		t.Errorf("runningMessage with a module per monitor = %q, want %q", got, want)
 	}
 }

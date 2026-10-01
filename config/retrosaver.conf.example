@@ -5,6 +5,10 @@ SAVER_DELAY=300
 # one. 0 disables switching, leaving the first module up until the lock.
 CYCLE_AFTER=300
 
+# What a second monitor shows: "same" runs one module on every monitor,
+# "different" picks a different module for each.
+MONITORS=same
+
 # Seconds after the screensaver starts before the session locks. 0 disables.
 LOCK_AFTER=900
 
