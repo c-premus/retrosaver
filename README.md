@@ -116,6 +116,13 @@ retrosaver teardown
 sudo apt remove retrosaver
 ```
 
+### Fedora (community package)
+
+A Fedora package is maintained by a contributor in the
+[`cdamian/retrosaver` COPR](https://copr.fedorainfracloud.org/coprs/cdamian/retrosaver/).
+It is community-maintained: it is not built, tested or released from this repository, so
+report packaging problems there. `retrosaver setup` and everything below apply unchanged.
+
 ## Configuration
 
 `~/.config/retrosaver/retrosaver.conf` is created by `retrosaver setup` and never

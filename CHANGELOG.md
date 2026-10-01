@@ -24,12 +24,20 @@ All notable changes to this project are documented here. The format follows
   `retrosaver stop` from another shell, or the module exiting ends it.
 - `wmctrl` and `xdotool` are no longer dependencies. retrosaver creates the saver windows
   itself.
+- `retrosaver setup` and `teardown` no longer tell you to run `apt`. Their hints now name
+  the packages and leave the package manager to you, so they read correctly on Fedora.
+  Thanks to @christofdamian.
 
 ### Fixed
 
 - Modules that size themselves only once, such as `anemone`, drew into a 1280×720 corner
   and left the rest of the screen black. Every module now starts in a window that is
   already fullscreen.
+
+### Documentation
+
+- The README points Fedora users at the community-maintained
+  [COPR package](https://copr.fedorainfracloud.org/coprs/cdamian/retrosaver/).
 
 ## [0.2.4] - 2026-09-30
 
