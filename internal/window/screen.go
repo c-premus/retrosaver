@@ -176,10 +176,7 @@ func (s *screen) settle(ctx context.Context) error {
 		return err
 	}
 	for i, w := range s.windows {
-		for {
-			if managed(s.conn, w, wmState["WM_STATE"]) && s.geometry(w) == s.mons[i] {
-				break
-			}
+		for !managed(s.conn, w, wmState["WM_STATE"]) || s.geometry(w) != s.mons[i] {
 			select {
 			case <-ctx.Done():
 				if errors.Is(ctx.Err(), context.Canceled) {
