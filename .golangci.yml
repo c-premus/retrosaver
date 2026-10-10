@@ -1,0 +1,16 @@
+# golangci-lint runs staticcheck and nothing else. gofmt and go vet are
+# separate CI gates, and gosec is left out on purpose: it fires G204 on every
+# exec.Command taking a module path, and those paths come from a directory
+# intersection, not from user input.
+#
+# Why golangci-lint, not the standalone staticcheck it wraps: it builds the
+# bundled staticcheck against a current golang.org/x/tools. Standalone
+# staticcheck releases pin their own x/tools, which lag behind Go's export data
+# format. Go 1.27.2 moved to export data v5, and staticcheck 2026.2.1 could not
+# read it.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - staticcheck

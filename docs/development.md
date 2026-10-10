@@ -220,10 +220,12 @@ than a pointer to a file — but the rules it enforces apply to any change made 
 contributor will meet them as automated pull requests.
 
 **Renovate targets the default branch directly.** Non-major updates merge themselves once
-CI is green; **major updates wait for a human**, with one exception: staticcheck names its
-releases by year (`2026.2.1`), so each new year reads as a major, and it automerges like a
-minor instead. That keeps the linter current for a Go minor toolchain bump, which is held
-for review and would otherwise go red on a staticcheck too old to read the new Go. New releases are held for three
+CI is green; **major updates wait for a human**. So does a Go minor toolchain bump, because
+a new Go can outrun the linter: the linter has to read the new compiler's export data, and
+the fix is to update the linter first. The linter is golangci-lint running staticcheck
+only, not standalone staticcheck. It builds the same analysers against a current
+`golang.org/x/tools`, which is what let the Go 1.27.2 patch release through when standalone
+staticcheck 2026.2.1 could not read it. New releases are held for three
 days before an update is even proposed (`minimumReleaseAge`), so a compromised or
 immediately-yanked upload does not land here on its release day. Security advisories skip
 that wait.
@@ -252,7 +254,7 @@ first, which is why they are worth knowing even if you never touch the config.
   directive beneath it is the one that moves.
 
 Three version pins are invisible to every built-in updater and are tracked by regex
-instead — `staticcheck` and `govulncheck` (both `go run <module>@<tag>` arguments) and
+instead — `golangci-lint` and `govulncheck` (both `go run <module>@<tag>` arguments) and
 `NFPM_VERSION`. Each appears in both the upstream and mirrored copy of a workflow, and one
 rule covers both so they cannot drift apart. **A new hardcoded version pin in a workflow
 needs a matching rule**, or it silently rots.
