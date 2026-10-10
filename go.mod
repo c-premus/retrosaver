@@ -51,4 +51,4 @@ require github.com/jezek/xgb v1.3.1
 // inotify syscalls. See docs/development.md: it is on the list of pure-Go
 // dependencies on purpose, because the stdlib syscall package is frozen and
 // points callers here.
-require golang.org/x/sys v0.48.0
+require golang.org/x/sys v0.49.0
