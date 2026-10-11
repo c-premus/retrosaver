@@ -127,7 +127,9 @@ edited by hand. The `apt-repo` job in `.github/workflows/release.yaml` runs afte
 release. It downloads the `.deb` files of **every** GitHub release, indexes and signs them
 with `scripts/build-apt-repo.sh`, and deploys the result to GitHub Pages. A Pages deploy
 replaces the whole site, so the repository is rebuilt from scratch each time. A version
-appears in it only while its GitHub release still has its `.deb` assets.
+appears in it only while its GitHub release still has its `.deb` assets. The same script
+writes the `index.html` a browser sees at that address, filling in the fingerprint and the
+version list from what it has just built.
 
 To republish the repository without cutting a release, dispatch `release.yaml` on `main`.
 The release job is skipped there and only `apt-repo` runs. Dispatching on an older tag
