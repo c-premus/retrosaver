@@ -11,6 +11,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The apt repository moved to `https://retrosaver.prem.us`. The old
+  `https://c-premus.github.io/retrosaver` address redirects there, so existing sources keep
+  working; the README's install section has a one-line command to update yours.
+
 ## [0.6.0] - 2026-10-11
 
 ### Added

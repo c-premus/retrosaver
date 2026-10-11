@@ -187,7 +187,7 @@ XScreenSaver display modules back to GNOME on Wayland. This address is meant for
 <h2>Install</h2>
 <p>Fetch the signing key and print its fingerprint:</p>
 <pre><code>sudo curl -fsSLo /usr/share/keyrings/retrosaver-archive-keyring.asc \
-  https://c-premus.github.io/retrosaver/retrosaver-archive-keyring.asc
+  https://retrosaver.prem.us/retrosaver-archive-keyring.asc
 gpg --show-keys /usr/share/keyrings/retrosaver-archive-keyring.asc</code></pre>
 <p>The fingerprint must be exactly:</p>
 <p><code class="fpr">@FPR@</code></p>
@@ -195,7 +195,7 @@ gpg --show-keys /usr/share/keyrings/retrosaver-archive-keyring.asc</code></pre>
 <a href="https://github.com/c-premus/retrosaver#from-the-apt-repository">README on GitHub</a>
 too. A fingerprint served from the same site as the key cannot vouch for that key on its
 own. If it differs, delete the file and stop. Otherwise add the repository and install:</p>
-<pre><code>echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/retrosaver-archive-keyring.asc] https://c-premus.github.io/retrosaver stable main" \
+<pre><code>echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/retrosaver-archive-keyring.asc] https://retrosaver.prem.us stable main" \
   | sudo tee /etc/apt/sources.list.d/retrosaver.list
 sudo apt update
 sudo apt install retrosaver

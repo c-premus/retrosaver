@@ -56,7 +56,7 @@ retrosaver setup
 \`\`\`
 
 To get this and later releases through \`apt upgrade\` instead, add the signed apt
-repository at https://c-premus.github.io/retrosaver. The key, its fingerprint and the
+repository at https://retrosaver.prem.us. The key, its fingerprint and the
 source line are in the README:
 https://github.com/c-premus/retrosaver#from-the-apt-repository
 

@@ -82,12 +82,12 @@ install the same `.deb`:
 ### From the apt repository
 
 Every release is published to a signed apt repository at
-`https://c-premus.github.io/retrosaver`, hosted on GitHub Pages. First fetch the signing
+`https://retrosaver.prem.us`, hosted on GitHub Pages. First fetch the signing
 key:
 
 ```bash
 sudo curl -fsSLo /usr/share/keyrings/retrosaver-archive-keyring.asc \
-  https://c-premus.github.io/retrosaver/retrosaver-archive-keyring.asc
+  https://retrosaver.prem.us/retrosaver-archive-keyring.asc
 gpg --show-keys /usr/share/keyrings/retrosaver-archive-keyring.asc
 ```
 
@@ -96,7 +96,7 @@ Before going further, check that the fingerprint `gpg` prints is exactly
 Then add the repository and install:
 
 ```bash
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/retrosaver-archive-keyring.asc] https://c-premus.github.io/retrosaver stable main" \
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/retrosaver-archive-keyring.asc] https://retrosaver.prem.us stable main" \
   | sudo tee /etc/apt/sources.list.d/retrosaver.list
 sudo apt update
 sudo apt install retrosaver
@@ -123,6 +123,18 @@ later, point the source at the key the package maintains and remove the old one:
 sudo sed -i 's#/etc/apt/keyrings/retrosaver.asc#/usr/share/keyrings/retrosaver-archive-keyring.asc#' \
   /etc/apt/sources.list.d/retrosaver.list
 sudo rm /etc/apt/keyrings/retrosaver.asc
+sudo apt update
+```
+
+#### Using the old `c-premus.github.io` address?
+
+The repository used to be at `https://c-premus.github.io/retrosaver`. That address
+redirects to `https://retrosaver.prem.us`, so your source keeps working, but you can point
+it at the new address directly:
+
+```bash
+sudo sed -i 's#https://c-premus.github.io/retrosaver#https://retrosaver.prem.us#' \
+  /etc/apt/sources.list.d/retrosaver.list
 sudo apt update
 ```
 

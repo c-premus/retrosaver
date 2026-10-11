@@ -163,7 +163,7 @@ jobs:
             exit 1
           fi
 
-  # The apt repository at https://c-premus.github.io/retrosaver, rebuilt from
+  # The apt repository at https://retrosaver.prem.us, rebuilt from
   # every release's .debs and deployed to GitHub Pages.
   #
   # Chained with `needs`, not a separate `on: release` workflow: a release

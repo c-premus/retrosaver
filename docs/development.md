@@ -122,7 +122,7 @@ VERSION=0.0.0-dev GOARCH=amd64 nfpm pkg --packager deb --target dist/
 
 ### The apt repository
 
-The public apt repository at `https://c-premus.github.io/retrosaver` is generated, never
+The public apt repository at `https://retrosaver.prem.us` is generated, never
 edited by hand. The `apt-repo` job in `.github/workflows/release.yaml` runs after each
 release. It downloads the `.deb` files of **every** GitHub release, indexes and signs them
 with `scripts/build-apt-repo.sh`, and deploys the result to GitHub Pages. A Pages deploy
