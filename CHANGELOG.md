@@ -17,6 +17,11 @@ All notable changes to this project are documented here. The format follows
   amd64 and arm64), rebuilt from every release, so `apt upgrade` picks up new versions. See
   the README's install section for the key and source line. Opening the address in a
   browser shows a page with the same instructions and the versions it serves.
+- The package installs the repository's signing key to
+  `/usr/share/keyrings/retrosaver-archive-keyring.asc` and keeps it up to date, so a
+  renewed key arrives with `apt upgrade` instead of expiring on you. If you added the
+  repository with the key at `/etc/apt/keyrings/retrosaver.asc`, the README's install
+  section has the one-time command to switch over.
 
 ## [0.5.1] - 2026-10-11
 

@@ -87,6 +87,18 @@ contents:
     file_info:
       mode: 0644
 
+  # The apt repository's signing key, Debian *-archive-keyring style. The README
+  # has users curl this same file to this same path once, before the first
+  # install; dpkg then takes over the unowned file, and every upgrade replaces
+  # it. That is how a renewed key reaches clients: one held only in
+  # /etc/apt/keyrings would expire on them. A plain file, not a conffile, so an
+  # upgrade always overwrites it. scripts/build-apt-repo.sh publishes the same
+  # bytes and fails if they are not the key that signs the repository.
+  - src: ./packaging/retrosaver-archive-keyring.asc
+    dst: /usr/share/keyrings/retrosaver-archive-keyring.asc
+    file_info:
+      mode: 0644
+
   # Without this an apt-installed user has `retrosaver help` and nothing else.
   - src: ./README.md
     dst: /usr/share/doc/retrosaver/README.md

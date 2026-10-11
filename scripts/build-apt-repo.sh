@@ -16,6 +16,15 @@
 # The signing key comes from $APT_SIGNING_KEY (an armored secret key) and is
 # imported into a throwaway GNUPGHOME, so nothing persists on the runner.
 #
+# The PUBLIC key is not exported from that secret. It is the committed
+# packaging/retrosaver-archive-keyring.asc, the same file the .deb installs to
+# /usr/share/keyrings, so the key a user curls on first install is byte for
+# byte the one the package later takes over. The build fails if its
+# fingerprint differs from the signing key's, so a renewal that updates the
+# secret but not the committed file (or the reverse) goes red here instead of
+# shipping a key that cannot verify the repository. $APT_PUBLIC_KEY overrides
+# the path, for a local test with a throwaway key.
+#
 # Usage:
 #   APT_SIGNING_KEY="$(cat key.asc)" build-apt-repo.sh SITE_DIR
 
@@ -26,6 +35,7 @@ if [ "$#" -ne 1 ]; then
     exit 2
 fi
 site="$1"
+public_key="${APT_PUBLIC_KEY:-$(dirname "$0")/../packaging/retrosaver-archive-keyring.asc}"
 suite=stable
 component=main
 arches="amd64 arm64"
@@ -34,6 +44,12 @@ if [ -z "${APT_SIGNING_KEY:-}" ]; then
     echo "build-apt-repo.sh: APT_SIGNING_KEY is empty" >&2
     exit 1
 fi
+if [ ! -s "$public_key" ]; then
+    echo "build-apt-repo.sh: no public key at $public_key" >&2
+    exit 1
+fi
+# Absolute, because the rest of the script runs from inside SITE_DIR.
+public_key="$(realpath "$public_key")"
 
 cd "$site"
 shopt -s nullglob
@@ -79,12 +95,18 @@ if [ -z "$fpr" ]; then
     exit 1
 fi
 
+public_fpr="$(gpg --batch --show-keys --with-colons "$public_key" | awk -F: '/^fpr/ { print $10; exit }')"
+if [ "$public_fpr" != "$fpr" ]; then
+    echo "build-apt-repo.sh: $public_key is ${public_fpr:-not a key}, but APT_SIGNING_KEY is $fpr" >&2
+    exit 1
+fi
+
 gpg --batch --yes --local-user "$fpr" --clearsign \
     --output "dists/$suite/InRelease" "dists/$suite/Release"
 gpg --batch --yes --local-user "$fpr" --armor --detach-sign \
     --output "dists/$suite/Release.gpg" "dists/$suite/Release"
-gpg --batch --armor --export "$fpr" > retrosaver-archive-keyring.asc
-gpg --batch --export "$fpr" > retrosaver-archive-keyring.gpg
+cp "$public_key" retrosaver-archive-keyring.asc
+gpg --batch --yes --dearmor --output retrosaver-archive-keyring.gpg "$public_key"
 
 # Assert the finished state rather than trusting the exit codes above. Verify
 # with the PUBLISHED key, exactly as a client will.
@@ -164,22 +186,22 @@ XScreenSaver display modules back to GNOME on Wayland. This address is meant for
 
 <h2>Install</h2>
 <p>Fetch the signing key and print its fingerprint:</p>
-<pre><code>sudo install -d -m 0755 /etc/apt/keyrings
-sudo curl -fsSLo /etc/apt/keyrings/retrosaver.asc \
+<pre><code>sudo curl -fsSLo /usr/share/keyrings/retrosaver-archive-keyring.asc \
   https://c-premus.github.io/retrosaver/retrosaver-archive-keyring.asc
-gpg --show-keys /etc/apt/keyrings/retrosaver.asc</code></pre>
+gpg --show-keys /usr/share/keyrings/retrosaver-archive-keyring.asc</code></pre>
 <p>The fingerprint must be exactly:</p>
 <p><code class="fpr">@FPR@</code></p>
 <p>Check it against the
 <a href="https://github.com/c-premus/retrosaver#from-the-apt-repository">README on GitHub</a>
 too. A fingerprint served from the same site as the key cannot vouch for that key on its
 own. If it differs, delete the file and stop. Otherwise add the repository and install:</p>
-<pre><code>echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/retrosaver.asc] https://c-premus.github.io/retrosaver stable main" \
+<pre><code>echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/retrosaver-archive-keyring.asc] https://c-premus.github.io/retrosaver stable main" \
   | sudo tee /etc/apt/sources.list.d/retrosaver.list
 sudo apt update
 sudo apt install retrosaver
 retrosaver setup</code></pre>
-<p>From then on, <code>apt upgrade</code> picks up each new release. The README explains
+<p>From then on, <code>apt upgrade</code> picks up each new release. The package installs
+the same key file and keeps it up to date, so you never need to fetch it again. The README explains
 what <code>retrosaver setup</code> changes and how to remove everything again.</p>
 
 <h2>What is here</h2>

@@ -135,20 +135,40 @@ To republish the repository without cutting a release, dispatch `release.yaml` o
 The release job is skipped there and only `apt-repo` runs. Dispatching on an older tag
 does not work, because a dispatch runs the workflow file as it was at that tag.
 
-`build-apt-repo.sh` checks its own output before anything is deployed. It verifies
-`InRelease` and `Release.gpg` with the published key, the same way a client does, and
-fails if the indexes list a different number of packages than the pool holds. To test a
-change, run it locally against a throwaway key. It needs `apt-ftparchive`, from the
-`apt-utils` package. The scratch `GNUPGHOME` keeps the test key out of your own keyring:
+The public key is committed as `packaging/retrosaver-archive-keyring.asc`, and the same
+file is used three ways: the `.deb` installs it to
+`/usr/share/keyrings/retrosaver-archive-keyring.asc`, `build-apt-repo.sh` publishes it as
+the key users curl, and the README tells them to curl it to that same path. dpkg takes over
+a file no package owns, so after the first install the package keeps the key up to date.
+That is the point: a key held only in the user's own `/etc/apt/keyrings` cannot be
+renewed. The secret half is the `APT_SIGNING_KEY` Actions secret.
+
+`build-apt-repo.sh` checks its own output before anything is deployed. It fails if the
+committed key's fingerprint is not the signing key's, verifies `InRelease` and
+`Release.gpg` with the committed key, the same way a client does, and fails if the indexes
+list a different number of packages than the pool holds. To test a change, run it locally
+against a throwaway key, with `APT_PUBLIC_KEY` pointing at that key's public half in place
+of the committed one. It needs `apt-ftparchive`, from the `apt-utils` package. The scratch
+`GNUPGHOME` keeps the test key out of your own keyring:
 
 ```bash
 export GNUPGHOME="$(mktemp -d)"
 gpg --batch --passphrase '' --quick-gen-key test@example.com ed25519 sign never
+gpg --armor --export test@example.com > "$GNUPGHOME/public.asc"
 mkdir -p site/pool/main && cp dist/*.deb site/pool/main/
 APT_SIGNING_KEY="$(gpg --armor --export-secret-keys test@example.com)" \
-  scripts/build-apt-repo.sh site
+  APT_PUBLIC_KEY="$GNUPGHOME/public.asc" scripts/build-apt-repo.sh site
 rm -rf "$GNUPGHOME"; unset GNUPGHOME
 ```
+
+**Renewing the key.** It expires on 2029-10-10. Extend the expiry of the same key; never
+rotate to a new one, which would break every installed client. Then, in one change, update
+the `APT_SIGNING_KEY` secret and `packaging/retrosaver-archive-keyring.asc`, and cut a
+release. The release must reach users **before** the old expiry: a client whose key has
+already expired cannot verify the repository, so it can never download the upgrade that
+carries the renewed key. The fingerprint check compares fingerprints only, which an
+extension does not change, so it cannot tell you that one of the two was missed. Check
+with `gpg --show-keys` that the committed file shows the new expiry.
 
 ## Manual verification
 

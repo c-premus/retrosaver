@@ -267,6 +267,12 @@ enables it, because enabling a
 .B systemd \-\-user
 unit needs the user's own session bus.
 .TP
+.I /usr/share/keyrings/retrosaver\-archive\-keyring.asc
+The signing key of the apt repository at
+.IR https://c\-premus.github.io/retrosaver .
+Shipped by the package so that every upgrade refreshes it; an apt source names it in
+.BR signed\-by= .
+.TP
 .I $XDG_RUNTIME_DIR/retrosaver.pid
 PIDs of the running module, one per line: one copy per monitor, primary first. Every PID read back is checked against
 .I /proc/<pid>/cmdline

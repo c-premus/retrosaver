@@ -86,10 +86,9 @@ Every release is published to a signed apt repository at
 key:
 
 ```bash
-sudo install -d -m 0755 /etc/apt/keyrings
-sudo curl -fsSLo /etc/apt/keyrings/retrosaver.asc \
+sudo curl -fsSLo /usr/share/keyrings/retrosaver-archive-keyring.asc \
   https://c-premus.github.io/retrosaver/retrosaver-archive-keyring.asc
-gpg --show-keys /etc/apt/keyrings/retrosaver.asc
+gpg --show-keys /usr/share/keyrings/retrosaver-archive-keyring.asc
 ```
 
 Before going further, check that the fingerprint `gpg` prints is exactly
@@ -97,12 +96,15 @@ Before going further, check that the fingerprint `gpg` prints is exactly
 Then add the repository and install:
 
 ```bash
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/retrosaver.asc] https://c-premus.github.io/retrosaver stable main" \
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/retrosaver-archive-keyring.asc] https://c-premus.github.io/retrosaver stable main" \
   | sudo tee /etc/apt/sources.list.d/retrosaver.list
 sudo apt update
 sudo apt install retrosaver
 retrosaver setup
 ```
+
+You only fetch the key this once. The package installs the same file and keeps it up to
+date, so a renewed key arrives with an ordinary `apt upgrade`.
 
 The `arch=` pin keeps apt from requesting an index the repository does not publish, such
 as i386 on a host with that architecture enabled for Steam or Wine.
@@ -110,6 +112,19 @@ as i386 on a host with that architecture enabled for Steam or Wine.
 Already installed from a release asset? Add the key and the repository the same way and
 run `sudo apt update`. apt treats it as the same package and upgrades it from the
 repository from then on. You do not need to reinstall or re-run `retrosaver setup`.
+
+#### Added the repository before 0.6.0?
+
+Earlier instructions kept the key at `/etc/apt/keyrings/retrosaver.asc`, where nothing
+updates it, and it expires in October 2029. Once `apt upgrade` has brought in 0.6.0 or
+later, point the source at the key the package maintains and remove the old one:
+
+```bash
+sudo sed -i 's#/etc/apt/keyrings/retrosaver.asc#/usr/share/keyrings/retrosaver-archive-keyring.asc#' \
+  /etc/apt/sources.list.d/retrosaver.list
+sudo rm /etc/apt/keyrings/retrosaver.asc
+sudo apt update
+```
 
 ### From a release asset
 
@@ -157,10 +172,11 @@ retrosaver teardown
 sudo apt remove retrosaver
 ```
 
-If you installed from the apt repository, also remove its source and key:
+If you installed from the apt repository, also remove its source. Removing the package
+removes its key, so `apt update` fails until the source is gone too:
 
 ```bash
-sudo rm /etc/apt/sources.list.d/retrosaver.list /etc/apt/keyrings/retrosaver.asc
+sudo rm /etc/apt/sources.list.d/retrosaver.list
 ```
 
 ### Fedora (community package)
