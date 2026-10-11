@@ -120,6 +120,34 @@ cp dist/retrosaver-linux-amd64 dist/retrosaver
 VERSION=0.0.0-dev GOARCH=amd64 nfpm pkg --packager deb --target dist/
 ```
 
+### The apt repository
+
+The public apt repository at `https://c-premus.github.io/retrosaver` is generated, never
+edited by hand. The `apt-repo` job in `.github/workflows/release.yaml` runs after each
+release. It downloads the `.deb` files of **every** GitHub release, indexes and signs them
+with `scripts/build-apt-repo.sh`, and deploys the result to GitHub Pages. A Pages deploy
+replaces the whole site, so the repository is rebuilt from scratch each time. A version
+appears in it only while its GitHub release still has its `.deb` assets.
+
+To republish the repository without cutting a release, dispatch `release.yaml` on `main`.
+The release job is skipped there and only `apt-repo` runs. Dispatching on an older tag
+does not work, because a dispatch runs the workflow file as it was at that tag.
+
+`build-apt-repo.sh` checks its own output before anything is deployed. It verifies
+`InRelease` and `Release.gpg` with the published key, the same way a client does, and
+fails if the indexes list a different number of packages than the pool holds. To test a
+change, run it locally against a throwaway key. It needs `apt-ftparchive`, from the
+`apt-utils` package. The scratch `GNUPGHOME` keeps the test key out of your own keyring:
+
+```bash
+export GNUPGHOME="$(mktemp -d)"
+gpg --batch --passphrase '' --quick-gen-key test@example.com ed25519 sign never
+mkdir -p site/pool/main && cp dist/*.deb site/pool/main/
+APT_SIGNING_KEY="$(gpg --armor --export-secret-keys test@example.com)" \
+  scripts/build-apt-repo.sh site
+rm -rf "$GNUPGHOME"; unset GNUPGHOME
+```
+
 ## Manual verification
 
 **A green `go test` is not evidence the screensaver works.** The unit tests cover pure logic

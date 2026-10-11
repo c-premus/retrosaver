@@ -73,15 +73,30 @@ changes take effect as soon as you save the file.
 
 ## Install
 
+Debian and Ubuntu, amd64 or arm64. There are two ways to get the package, and both
+install the same `.deb`:
+
+- **The apt repository** (recommended). `apt upgrade` picks up each new release.
+- **A release asset.** You download and install each new version yourself.
+
 ### From the apt repository
 
-Every release is published to a signed apt repository on GitHub Pages, so `apt upgrade`
-picks up new versions:
+Every release is published to a signed apt repository at
+`https://c-premus.github.io/retrosaver`, hosted on GitHub Pages. First fetch the signing
+key:
 
 ```bash
 sudo install -d -m 0755 /etc/apt/keyrings
 sudo curl -fsSLo /etc/apt/keyrings/retrosaver.asc \
   https://c-premus.github.io/retrosaver/retrosaver-archive-keyring.asc
+gpg --show-keys /etc/apt/keyrings/retrosaver.asc
+```
+
+Before going further, check that the fingerprint `gpg` prints is exactly
+`54EF82BF27008A7345E415BB20F092797CFB23BD`. If it differs, delete the file and stop.
+Then add the repository and install:
+
+```bash
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/retrosaver.asc] https://c-premus.github.io/retrosaver stable main" \
   | sudo tee /etc/apt/sources.list.d/retrosaver.list
 sudo apt update
@@ -89,18 +104,12 @@ sudo apt install retrosaver
 retrosaver setup
 ```
 
-The repository signing key's fingerprint is
-`54EF 82BF 2700 8A73 45E4  15BB 20F0 9279 7CFB 23BD`. Check the downloaded key against it
-before trusting it:
+The `arch=` pin keeps apt from requesting an index the repository does not publish, such
+as i386 on a host with that architecture enabled for Steam or Wine.
 
-```bash
-gpg --show-keys /etc/apt/keyrings/retrosaver.asc
-```
-
-The repository serves amd64 and arm64. The `arch=` pin stops apt asking for an index it
-does not publish on a host with a foreign architecture enabled (i386 for Steam or Wine).
-The packages are the same `.deb` files attached to each release, so the notes below on
-dependencies, `setup`, upgrades and removal apply to both install methods.
+Already installed from a release asset? Add the key and the repository the same way and
+run `sudo apt update`. apt treats it as the same package and upgrades it from the
+repository from then on. You do not need to reinstall or re-run `retrosaver setup`.
 
 ### From a release asset
 
@@ -112,6 +121,10 @@ sudo apt install ./retrosaver_<version>_amd64.deb
 retrosaver setup
 ```
 
+To upgrade, download the newer `.deb` and run the same `apt install` command on it.
+
+### What the package does
+
 `apt` pulls the XScreenSaver module packages as dependencies, along with
 `unclutter-xfixes`, which hides the pointer. The package also declares
 `Conflicts: xscreensaver`, because the daemon is the broken component and would otherwise
@@ -121,9 +134,8 @@ autostart and emit errors alongside this one.
 `systemd --user` unit and takes ownership of `idle-delay` — all per-user operations that
 need your own session bus, which a package's root install script cannot do correctly.
 
-Upgrading is the same command against a newer `.deb` — `retrosaver setup` does not need
-re-running, and the package restarts the daemon for you so the new binary actually takes
-effect.
+An upgrade, by either method, does not need `retrosaver setup` re-run, and the package
+restarts the daemon for you so the new binary actually takes effect.
 
 > The restart needs systemd 249.10 or 250 or newer to reach your user session. On an
 > older systemd the package skips it quietly and the old daemon keeps running until you
@@ -143,6 +155,12 @@ To reverse it:
 ```bash
 retrosaver teardown
 sudo apt remove retrosaver
+```
+
+If you installed from the apt repository, also remove its source and key:
+
+```bash
+sudo rm /etc/apt/sources.list.d/retrosaver.list /etc/apt/keyrings/retrosaver.asc
 ```
 
 ### Fedora (community package)

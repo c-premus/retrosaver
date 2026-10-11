@@ -55,8 +55,10 @@ sudo apt install ./retrosaver_${version}_amd64.deb   # or _arm64.deb
 retrosaver setup
 \`\`\`
 
-To get upgrades through \`apt\` instead, add the signed apt repository at
-https://c-premus.github.io/retrosaver — the README's Install section has the key and source line.
+To get this and later releases through \`apt upgrade\` instead, add the signed apt
+repository at https://c-premus.github.io/retrosaver. The key, its fingerprint and the
+source line are in the README:
+https://github.com/c-premus/retrosaver#from-the-apt-repository
 
 The README explains what \`setup\` changes and how \`retrosaver teardown\` undoes it.
 NOTES
