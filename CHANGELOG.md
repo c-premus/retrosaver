@@ -11,6 +11,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Signed apt repository on GitHub Pages (`https://c-premus.github.io/retrosaver`, `stable main`,
+  amd64 and arm64), rebuilt from every release, so `apt upgrade` picks up new versions. See
+  the README's install section for the key and source line.
+
 ## [0.5.1] - 2026-10-11
 
 ### Fixed

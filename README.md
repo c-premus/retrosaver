@@ -73,6 +73,35 @@ changes take effect as soon as you save the file.
 
 ## Install
 
+### From the apt repository
+
+Every release is published to a signed apt repository on GitHub Pages, so `apt upgrade`
+picks up new versions:
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSLo /etc/apt/keyrings/retrosaver.asc \
+  https://c-premus.github.io/retrosaver/retrosaver-archive-keyring.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/retrosaver.asc] https://c-premus.github.io/retrosaver stable main" \
+  | sudo tee /etc/apt/sources.list.d/retrosaver.list
+sudo apt update
+sudo apt install retrosaver
+retrosaver setup
+```
+
+The repository signing key's fingerprint is
+`54EF 82BF 2700 8A73 45E4  15BB 20F0 9279 7CFB 23BD`. Check the downloaded key against it
+before trusting it:
+
+```bash
+gpg --show-keys /etc/apt/keyrings/retrosaver.asc
+```
+
+The repository serves amd64 and arm64. The `arch=` pin stops apt asking for an index it
+does not publish on a host with a foreign architecture enabled (i386 for Steam or Wine).
+The packages are the same `.deb` files attached to each release, so the notes below on
+dependencies, `setup`, upgrades and removal apply to both install methods.
+
 ### From a release asset
 
 Download the `.deb` for your architecture from the

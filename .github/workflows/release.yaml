@@ -159,3 +159,59 @@ jobs:
             echo "::error::expected 4 assets, found ${count}"
             exit 1
           fi
+
+  # The apt repository at https://c-premus.github.io/retrosaver, rebuilt from
+  # every release's .debs and deployed to GitHub Pages.
+  #
+  # Chained with `needs`, not a separate `on: release` workflow: a release
+  # created with GITHUB_TOKEN triggers no other workflow, so that one would
+  # never run. A Pages deploy replaces the whole site, so the repository is
+  # rebuilt from ALL releases each time, never appended to.
+  apt-repo:
+    name: Publish apt repository
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    # The environment's deployment rules allow `v*` tags and `main`; any
+    # other ref is rejected before this job starts.
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    # One deploy at a time across all tags. When the mirror sync re-pushes
+    # every tag at once, the queued runs collapse to the newest and the rest
+    # show as cancelled -- expected, since each rebuild is the same repository.
+    concurrency:
+      group: apt-repo
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download every release's packages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o errexit -o nounset -o pipefail
+          mkdir -p site/pool/main
+          gh release list --limit 1000 --json tagName --jq '.[].tagName' \
+            | while read -r tag; do
+                gh release download "$tag" --pattern '*.deb' --dir site/pool/main --clobber
+              done
+          ls -la site/pool/main
+
+      - name: Build and sign the repository
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          command -v apt-ftparchive >/dev/null || sudo apt-get install -y apt-utils
+          scripts/build-apt-repo.sh site
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
