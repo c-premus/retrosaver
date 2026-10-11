@@ -113,31 +113,6 @@ Already installed from a release asset? Add the key and the repository the same 
 run `sudo apt update`. apt treats it as the same package and upgrades it from the
 repository from then on. You do not need to reinstall or re-run `retrosaver setup`.
 
-#### Added the repository before 0.6.0?
-
-Earlier instructions kept the key at `/etc/apt/keyrings/retrosaver.asc`, where nothing
-updates it, and it expires in October 2029. Once `apt upgrade` has brought in 0.6.0 or
-later, point the source at the key the package maintains and remove the old one:
-
-```bash
-sudo sed -i 's#/etc/apt/keyrings/retrosaver.asc#/usr/share/keyrings/retrosaver-archive-keyring.asc#' \
-  /etc/apt/sources.list.d/retrosaver.list
-sudo rm /etc/apt/keyrings/retrosaver.asc
-sudo apt update
-```
-
-#### Using the old `c-premus.github.io` address?
-
-The repository used to be at `https://c-premus.github.io/retrosaver`. That address
-redirects to `https://retrosaver.prem.us`, so your source keeps working, but you can point
-it at the new address directly:
-
-```bash
-sudo sed -i 's#https://c-premus.github.io/retrosaver#https://retrosaver.prem.us#' \
-  /etc/apt/sources.list.d/retrosaver.list
-sudo apt update
-```
-
 ### From a release asset
 
 Download the `.deb` for your architecture from the
