@@ -163,7 +163,7 @@ jobs:
       # unlike the linter this gate can legitimately fail a pull request that
       # changed nothing, when a new advisory is published.
       - name: govulncheck (GATE)
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
       - name: shellcheck (GATE)
         run: |
