@@ -270,7 +270,10 @@ than a pointer to a file — but the rules it enforces apply to any change made 
 contributor will meet them as automated pull requests.
 
 **Renovate targets the default branch directly.** Non-major updates merge themselves once
-CI is green; **major updates wait for a human**. So does a Go minor toolchain bump, because
+CI is green; **major updates wait for a human**. A merged update that changes what the
+package is built from — Go source, `go.mod`/`go.sum`, or a packaged file — is released
+automatically the next day. One that only bumps a tool CI uses waits for the next
+release. So does a Go minor toolchain bump, because
 a new Go can outrun the linter: the linter has to read the new compiler's export data, and
 the fix is to update the linter first. The linter is golangci-lint running staticcheck
 only, not standalone staticcheck. It builds the same analysers against a current
