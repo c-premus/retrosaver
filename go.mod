@@ -37,7 +37,7 @@ go 1.26.0
 // line above only when a dependency forces it or the code needs a newer feature.
 toolchain go1.27.2
 
-require github.com/godbus/dbus/v5 v5.2.3
+require github.com/godbus/dbus/v5 v5.2.4
 
 // github.com/jezek/xgb is the third dependency, used only by internal/window to
 // read the monitor layout from Xinerama and create the saver windows, which a
