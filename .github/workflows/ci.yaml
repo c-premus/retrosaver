@@ -222,6 +222,12 @@ jobs:
         shell: bash
         run: |
           set -o errexit -o nounset -o pipefail
+          # In a job container the checkout can belong to another uid than the
+          # one running the step (GitHub's does), and git then refuses the
+          # repository as "dubious ownership" -- which `go build` reports as
+          # "error obtaining VCS status: exit status 128". Trusting the
+          # workspace keeps the commit stamp; -buildvcs=false would drop it.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           CGO_ENABLED=0 go build -o /tmp/retrosaver ./cmd/retrosaver
           RETROSAVER_BIN=/tmp/retrosaver xvfb-run -a \
             python3 -m unittest discover -s gui -v 2>&1 | tee /tmp/window.log
