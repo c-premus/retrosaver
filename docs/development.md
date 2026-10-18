@@ -163,6 +163,48 @@ Rules it follows:
 - **The service toggle runs `retrosaver setup` and `teardown`**, so do not flip it
   while testing on a host whose daemon you depend on.
 
+### Packaging for other distributions
+
+The `.deb`s are built here; other distributions package from source, as the Fedora COPR
+does. Nothing in the settings app is Debian-specific: it runs `retrosaver` from `PATH` and
+`systemctl --user`, and installs to the usual FHS paths. It needs no build step.
+
+Ship it as a separate, architecture-independent package, as `nfpm-gtk.yaml` does, so the
+daemon keeps no Python or GTK dependency:
+
+| Source | Installed as |
+|---|---|
+| `gui/retrosaver-settings` | `/usr/bin/retrosaver-settings` (0755) |
+| `gui/us.prem.Retrosaver.desktop` | `/usr/share/applications/` |
+| `gui/us.prem.Retrosaver.metainfo.xml` | `/usr/share/metainfo/` |
+| `gui/icons/hicolor/...` | `/usr/share/icons/hicolor/...`, same relative paths |
+| `docs/retrosaver-settings.1` | `/usr/share/man/man1/`, compressed as usual |
+
+Runtime dependencies:
+
+| | Debian, Ubuntu | Fedora |
+|---|---|---|
+| Python bindings | `python3-gi` | `python3-gobject` |
+| GTK 4 | `gir1.2-gtk-4.0` | `gtk4` |
+| libadwaita (1.2 or newer) | `gir1.2-adw-1` | `libadwaita` |
+| The daemon | `retrosaver (= version)` | `retrosaver = %{version}-%{release}` |
+
+**Pin the daemon to the exact same version.** The app's only interface is the output of
+`retrosaver config show --json`, `config set` and `list --all --json`, which ship in the
+same release.
+
+Checks that need no display, suitable for `%check` or a build's test step:
+
+```bash
+python3 -m unittest discover -s gui
+desktop-file-validate gui/us.prem.Retrosaver.desktop
+appstreamcli validate --no-net gui/us.prem.Retrosaver.metainfo.xml
+appstream-util validate-relax --nonet gui/us.prem.Retrosaver.metainfo.xml  # Fedora's older tool
+```
+
+Tested on Fedora 44 (GTK 4.22, libadwaita 1.9, xscreensaver 6.16), where module
+discovery, all four checks and a scripted run of the window pass.
+
 ### The apt repository
 
 The public apt repository at `https://retrosaver.prem.us` is generated, never

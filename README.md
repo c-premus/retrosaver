@@ -178,12 +178,15 @@ A Fedora package is maintained by a contributor in the
 [`cdamian/retrosaver` COPR](https://copr.fedorainfracloud.org/coprs/cdamian/retrosaver/).
 It is community-maintained: it is not built, tested or released from this repository, so
 report packaging problems there. `retrosaver setup` and everything below apply unchanged.
+Whether it includes the settings app is up to its maintainer; notes for packagers are in
+[docs/development.md](docs/development.md#packaging-for-other-distributions).
 
 ## Configuration
 
 ### The settings app
 
-The optional `retrosaver-gtk` package adds **Retrosaver** to the GNOME app grid, or run
+The optional `retrosaver-gtk` package (Debian and Ubuntu) adds **Retrosaver** to the GNOME
+app grid, or run
 `retrosaver-settings`. It is a GTK 4 window over the same config file: it turns the
 screensaver on and off (by running `setup` and `teardown`), sets the timings in minutes and
 the monitor mode, and lists every installed module with its description, so you can tick

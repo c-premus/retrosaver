@@ -110,8 +110,9 @@ def main(argv):
         from gi.repository import Adw, Gio, GLib, Gtk
     except (ImportError, ValueError) as exc:
         print(
-            _("retrosaver-settings needs GTK 4 and libadwaita for Python "
-              "(the python3-gi, gir1.2-gtk-4.0 and gir1.2-adw-1 packages): {}")
+            _("retrosaver-settings needs PyGObject with GTK 4 and libadwaita: "
+              "python3-gi, gir1.2-gtk-4.0 and gir1.2-adw-1 on Debian and Ubuntu, "
+              "python3-gobject, gtk4 and libadwaita on Fedora ({})")
             .format(exc),
             file=sys.stderr,
         )

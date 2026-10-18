@@ -26,7 +26,6 @@
     </p>
   </description>
   <launchable type="desktop-id">us.prem.Retrosaver.desktop</launchable>
-  <icon type="stock">us.prem.Retrosaver</icon>
   <url type="homepage">https://retrosaver.prem.us</url>
   <url type="bugtracker">https://github.com/c-premus/retrosaver/issues</url>
   <url type="vcs-browser">https://github.com/c-premus/retrosaver</url>
@@ -49,6 +48,4 @@
     <control>keyboard</control>
   </supports>
   <content_rating type="oars-1.1"/>
-  <releases>
-  </releases>
 </component>
