@@ -69,12 +69,15 @@ a module launched behind it would be invisible while still driving the GPU and k
 the display awake. Stages 2 and 3 still run on schedule, so the display still powers off.
 
 All the delays are configurable, cycling and stages 2 and 3 can each be disabled, and
-changes take effect as soon as you save the file.
+changes take effect straight away, whether you make them in the
+[settings app](#the-settings-app) or in the config file.
 
 ## Install
 
-Debian and Ubuntu, amd64 or arm64. There are two ways to get the package, and both
-install the same `.deb`:
+Debian and Ubuntu, amd64 or arm64. There are two packages: `retrosaver`, the daemon and
+command-line tool, and the optional `retrosaver-gtk`, which adds a
+[settings app](#the-settings-app). There are two ways to get them, and both install the
+same `.deb` files:
 
 - **The apt repository** (recommended). `apt upgrade` picks up each new release.
 - **A release asset.** You download and install each new version yourself.
@@ -162,7 +165,7 @@ To reverse it:
 
 ```bash
 retrosaver teardown
-sudo apt remove retrosaver
+sudo apt remove retrosaver retrosaver-gtk
 ```
 
 If you installed from the apt repository, also remove its source. Removing the package
@@ -186,12 +189,21 @@ Whether it includes the settings app is up to its maintainer; notes for packager
 ### The settings app
 
 The optional `retrosaver-gtk` package (Debian and Ubuntu) adds **Retrosaver** to the GNOME
-app grid, or run
-`retrosaver-settings`. It is a GTK 4 window over the same config file: it turns the
-screensaver on and off (by running `setup` and `teardown`), sets the timings in minutes and
-the monitor mode, and lists every installed module with its description, so you can tick
-the ones the screensaver may show. Changes save as you make them and the daemon picks them
-up straight away.
+app grid; from a terminal, run `retrosaver-settings`. It is a GTK 4 window over the same
+config file:
+
+- **General** turns the screensaver on and off (by running `setup` and `teardown`), and
+  sets the timings, in minutes, and what a second monitor shows.
+- **Modules** lists every installed module with its description, so you can tick the
+  ones the screensaver may show: either every module except the unticked ones, or only
+  the ticked ones.
+
+<p>
+  <img src="docs/screenshots/general.png" width="400" alt="The General page: a switch to run the screensaver, the start delay, module switching, screen lock and screen-off timings, and the monitor setting">
+  <img src="docs/screenshots/modules.png" width="400" alt="The Modules page: a search box, a choice between all modules except unticked ones and only ticked ones, and the list of modules with descriptions and tick boxes">
+</p>
+
+Changes save as you make them, and the daemon picks them up straight away.
 
 It is a separate package so that the daemon needs no Python or GTK. It edits the file
 through `retrosaver config set`, so everything below still applies, and hand edits and
@@ -312,6 +324,7 @@ Security policy, and a note on why this is not a screen locker, are in
 go build -o retrosaver ./cmd/retrosaver
 go test ./...
 gofmt -l .
+python3 -m unittest discover -s gui    # the settings app
 ```
 
 A source build can run modules and the daemon, but `retrosaver setup` needs the installed

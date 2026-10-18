@@ -26,6 +26,16 @@
     </p>
   </description>
   <launchable type="desktop-id">us.prem.Retrosaver.desktop</launchable>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Turning the screensaver on and setting its timing</caption>
+      <image>https://raw.githubusercontent.com/c-premus/retrosaver/main/docs/screenshots/general.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Choosing the modules it may show</caption>
+      <image>https://raw.githubusercontent.com/c-premus/retrosaver/main/docs/screenshots/modules.png</image>
+    </screenshot>
+  </screenshots>
   <url type="homepage">https://retrosaver.prem.us</url>
   <url type="bugtracker">https://github.com/c-premus/retrosaver/issues</url>
   <url type="vcs-browser">https://github.com/c-premus/retrosaver</url>
