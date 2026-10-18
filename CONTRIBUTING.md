@@ -42,7 +42,8 @@ go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0 run ./...
 go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 shellcheck $(git ls-files '*.sh')
 python3 -m py_compile gui/retrosaver-settings   # the settings app
-python3 -m unittest discover -s gui
+python3 -m unittest discover -s gui    # window tests skip without a display:
+RETROSAVER_BIN=./retrosaver xvfb-run -a python3 -m unittest discover -s gui   # runs them
 desktop-file-validate gui/us.prem.Retrosaver.desktop
 appstreamcli validate --no-net gui/us.prem.Retrosaver.metainfo.xml
 ```

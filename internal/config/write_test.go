@@ -197,3 +197,24 @@ func TestKeysMatchesTheParser(t *testing.T) {
 		}
 	}
 }
+
+// An unwritable directory must fail cleanly and leave the old file in place,
+// which is what lets the settings app report the error and reload.
+func TestSetIntoAReadOnlyDirectoryFailsWithoutDamage(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	path := writeFile(t, "SAVER_DELAY=15\n")
+	dir := filepath.Dir(path)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if err := Set(path, map[string]string{"SAVER_DELAY": "16"}); err == nil {
+		t.Fatal("Set succeeded in a read-only directory")
+	}
+	if got := readFile(t, path); got != "SAVER_DELAY=15\n" {
+		t.Errorf("file = %q", got)
+	}
+}

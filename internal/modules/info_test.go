@@ -64,3 +64,18 @@ func TestInfoOnAnInstalledModule(t *testing.T) {
 		t.Errorf("Info = %+v", got)
 	}
 }
+
+func TestInfoRejectsAnUnknownCharset(t *testing.T) {
+	dir := t.TempDir()
+	body := `<?xml version="1.0" encoding="KOI8-R"?><screensaver _label="X"/>`
+	if err := os.WriteFile(filepath.Join(dir, "koi.xml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (&Finder{ConfigDir: dir}).Info("koi")
+	if err == nil {
+		t.Error("Info succeeded on an unsupported charset")
+	}
+	if got != (Info{Name: "koi", Label: "koi"}) {
+		t.Errorf("Info = %+v, want the bare-name fallback", got)
+	}
+}

@@ -165,3 +165,56 @@ func TestListWithNothingSelected(t *testing.T) {
 		t.Errorf("got %s", buf.String())
 	}
 }
+
+func TestConfigShowPlainText(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "retrosaver.conf")
+	if err := os.WriteFile(path, []byte("SAVER_DELAY=15\nINCLUDE=\"flame ifs\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := showConfig(&buf, path, false); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	for _, want := range []string{"# " + path + "\n", "SAVER_DELAY=15\n", "MONITORS=same\n", `INCLUDE="flame ifs"` + "\n"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output lacks %q:\n%s", want, got)
+		}
+	}
+	// The plain output is itself a valid config: feeding it back changes nothing.
+	again := filepath.Join(t.TempDir(), "retrosaver.conf")
+	if err := os.WriteFile(again, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, errA := config.Load(path)
+	b, errB := config.Load(again)
+	if errA != nil || errB != nil || a.SaverDelay != b.SaverDelay ||
+		strings.Join(a.Include, " ") != strings.Join(b.Include, " ") {
+		t.Errorf("round trip differs: %+v / %+v (%v, %v)", a, b, errA, errB)
+	}
+}
+
+func TestConfigCommandErrors(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	for _, args := range [][]string{nil, {"edit"}, {"set"}, {"set", "SAVER_DELAY"}, {"set", "MONITORS=both"}} {
+		if err := dispatch("config", args); err == nil {
+			t.Errorf("config %q succeeded", args)
+		}
+	}
+	path, _ := config.UserConfigPath()
+	if _, err := os.Stat(path); err == nil {
+		t.Error("a failed config command created the file")
+	}
+}
+
+func TestConfigShowThroughDispatch(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := dispatch("config", []string{"set", "LOCK_AFTER=0"}); err != nil {
+		t.Fatal(err)
+	}
+	// Stdout is the real one here; this proves the path resolves and parses.
+	if err := dispatch("config", []string{"show", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+}

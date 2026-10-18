@@ -151,9 +151,24 @@ Rules it follows:
   which is why `retrosaver-gtk` pins its `retrosaver` version exactly. A new config key
   needs a control here too.
 - **Logic that can be tested without GTK stays outside it.** Everything above `main()`
-  imports no `gi`, and `gui/test_settings.py` covers it. The GTK classes are built by
-  `gtk_classes()`, so a script can drive a real window: set a control, wait out the
-  half-second save delay, and read the file.
+  imports no `gi`, and `gui/test_settings.py` covers it anywhere.
+- **The window itself is tested too**, by `gui/test_window.py`. It builds a real window
+  through `gtk_classes()`, sets controls, waits out the half-second save delay, and reads
+  the file. It covers the timings, both module modes, search, the service switch with its
+  confirmation and failure dialogs, a failed save, and a broken config, which is about 90%
+  of the app. A stub `retrosaver` (real `config`/`list`, recorded `setup`/`teardown`) and a
+  stub `systemctl` keep it away from your session. Run it on a session or under Xvfb, with
+  a build that has the `config` command:
+
+  ```bash
+  go build -o retrosaver ./cmd/retrosaver
+  RETROSAVER_BIN=./retrosaver xvfb-run -a python3 -m unittest discover -s gui -v
+  ```
+
+  Without GTK, libadwaita 1.2, a display or such a binary, these tests skip rather than
+  fail. CI's "Settings app window" job runs them in Debian bookworm, at the 1.2 floor,
+  and fails if any of them skipped. Every wait in them has a deadline, so a broken
+  window fails the test instead of hanging the run.
 - **libadwaita 1.2 API only** (`ActionRow`/`ExpanderRow` with suffix widgets,
   `MessageDialog`, `AboutWindow`), so it runs on Debian bookworm as well as current
   releases. Newer widgets such as `SpinRow` and `PreferencesDialog` are not available

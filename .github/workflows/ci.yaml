@@ -188,3 +188,44 @@ jobs:
           python3 -m unittest discover -s gui -v
           desktop-file-validate gui/us.prem.Retrosaver.desktop
           appstreamcli validate --no-net gui/us.prem.Retrosaver.metainfo.xml
+
+  # The settings app's window tests drive a real GTK window under Xvfb. They
+  # need libadwaita 1.2 or newer, which the Ubuntu 22.04 runner image lacks
+  # (it has 1.1), so this job runs in Debian bookworm, whose 1.2.2 is exactly
+  # the app's floor: a call newer than that fails here first. The node image
+  # is bookworm with the Node that checkout and setup-go need.
+  #
+  # Not one of the required Build checks, but it is part of main's combined
+  # status, so the nightly release will not ship while it is red.
+  window:
+    name: Settings app window
+    runs-on: ubuntu-latest
+    container:
+      image: node:22-bookworm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install GTK, libadwaita and a display
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            python3 python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 xvfb xauth xscreensaver-data
+          dpkg-query -W gir1.2-adw-1 gir1.2-gtk-4.0
+
+      # A window test skips without GTK or a display, which is right on a
+      # packager's machine and wrong here: a run that skipped them would be
+      # green while testing nothing. So the step also fails on any skip.
+      - name: window tests (GATE)
+        shell: bash
+        run: |
+          set -o errexit -o nounset -o pipefail
+          CGO_ENABLED=0 go build -o /tmp/retrosaver ./cmd/retrosaver
+          RETROSAVER_BIN=/tmp/retrosaver xvfb-run -a \
+            python3 -m unittest discover -s gui -v 2>&1 | tee /tmp/window.log
+          if grep -q 'skipped' /tmp/window.log; then
+            echo "::error::window tests were skipped; see the log above"
+            exit 1
+          fi
