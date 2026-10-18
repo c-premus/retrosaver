@@ -5,9 +5,6 @@
   <project_license>MIT</project_license>
   <name>Retrosaver</name>
   <summary>Classic XScreenSaver modules for GNOME on Wayland</summary>
-  <developer id="us.prem">
-    <name>Chris</name>
-  </developer>
   <description>
     <p>
       Retrosaver brings back the late-1990s XScreenSaver display modules, such as
@@ -38,7 +35,6 @@
   </screenshots>
   <url type="homepage">https://retrosaver.prem.us</url>
   <url type="bugtracker">https://github.com/c-premus/retrosaver/issues</url>
-  <url type="vcs-browser">https://github.com/c-premus/retrosaver</url>
   <categories>
     <category>Settings</category>
     <category>DesktopSettings</category>
