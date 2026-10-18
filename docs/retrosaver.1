@@ -122,6 +122,19 @@ from the module's config XML, and whether it is
 .BR selected .
 An empty selection is not an error here, as it is for the plain list.
 .RE
+.TP
+.B preview \fR[\fB\-\-geometry\fR \fIW\fBx\fIH\fR] \fImodule\fR
+Show one module in an ordinary, movable window instead of fullscreen, to see what it
+looks like. The default size is
+.BR 1280x720 .
+Any installed display module can be previewed, including one that
+.B INCLUDE
+or
+.B EXCLUDE
+rules out. The command becomes the module's own process, so it runs until the window is
+closed or the process is stopped, and it leaves a running daemon and
+.B idle\-delay
+alone.
 .SS Configuration
 .TP
 .B config show \fR[\fB\-\-json\fR]

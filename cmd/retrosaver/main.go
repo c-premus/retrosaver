@@ -149,6 +149,8 @@ Runtime commands:
   list [--all] [--json]
                       Print the selectable modules, or with --all every installed
                       one; --json adds labels, descriptions and selection
+  preview [--geometry WxH] module
+                      Show one module in an ordinary window, not fullscreen
 
 Installation commands:
   setup               Preflight, enable the user unit, take ownership of idle-delay
@@ -187,6 +189,8 @@ func dispatch(cmd string, args []string) error {
 		return cmdStop(args)
 	case "list":
 		return cmdList(args)
+	case "preview":
+		return cmdPreview(args)
 	case "setup":
 		return cmdSetup(args)
 	case "teardown":

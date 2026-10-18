@@ -53,6 +53,21 @@ def is_whole_minutes(seconds):
     return seconds % 60 == 0
 
 
+# A preview that exits sooner than this failed to start. One that exits later
+# was most likely closed by the user, which some modules report as an error.
+PREVIEW_STARTUP_S = 2
+
+
+def preview_args(name):
+    """The retrosaver arguments that show one module in a window."""
+    return ["preview", name]
+
+
+def preview_failed(ok, seconds_running, stopped_by_us):
+    """Whether a finished preview is worth reporting as a failure."""
+    return not ok and not stopped_by_us and seconds_running < PREVIEW_STARTUP_S
+
+
 def set_args(updates):
     """The `retrosaver config set` arguments for a dict of key -> value.
     Sorted, so the command is the same whatever order the changes came in."""
@@ -172,6 +187,7 @@ def gtk_classes(Adw, Gio, GLib, Gtk):
             self.saving = False
             self.loading = False
             self.service = None
+            self.preview = None
 
             self.toasts = Adw.ToastOverlay()
             self.stack = Adw.ViewStack()
@@ -277,6 +293,8 @@ def gtk_classes(Adw, Gio, GLib, Gtk):
         # ---- pages ------------------------------------------------------
 
         def build_pages(self):
+            # The rows are rebuilt, so a preview would lose its button.
+            self.stop_preview()
             for name in ("general", "modules"):
                 old = self.stack.get_child_by_name(name)
                 if old is not None:
@@ -411,6 +429,7 @@ def gtk_classes(Adw, Gio, GLib, Gtk):
             self.list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
             self.list.add_css_class("boxed-list")
             self.checks = {}
+            self.play_buttons = {}
             for m in self.modules:
                 row = Adw.ActionRow(title=m["label"], subtitle=m["description"])
                 row.set_use_markup(False)
@@ -425,6 +444,13 @@ def gtk_classes(Adw, Gio, GLib, Gtk):
                 name.add_css_class("dim-label")
                 name.add_css_class("caption")
                 row.add_suffix(name)
+                play = Gtk.Button(icon_name="media-playback-start-symbolic",
+                                  valign=Gtk.Align.CENTER,
+                                  tooltip_text=_("Preview"))
+                play.add_css_class("flat")
+                play.connect("clicked", self.on_preview, m["name"])
+                row.add_suffix(play)
+                self.play_buttons[m["name"]] = play
                 self.checks[m["name"]] = check
                 self.list.append(row)
             # Rows are appended in self.modules order, so a row's index is its
@@ -526,7 +552,74 @@ def gtk_classes(Adw, Gio, GLib, Gtk):
             retrosaver(set_args(updates), done)
             return GLib.SOURCE_REMOVE
 
+        # ---- preview ----------------------------------------------------
+
+        def on_preview(self, button, name):
+            current = self.preview
+            self.stop_preview()
+            if current is not None and current["name"] == name:
+                return  # the same button again means stop
+            self.start_preview(name, button)
+
+        def start_preview(self, name, button):
+            try:
+                proc = Gio.Subprocess.new(
+                    [retrosaver_binary()] + preview_args(name),
+                    Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_PIPE)
+            except GLib.Error as exc:
+                self.toast(_("Could not preview {}: {}").format(name, exc.message))
+                return
+            # Keep the screensaver off while the preview is up: GNOME fires no
+            # idle watches while an idle inhibitor is held, so the daemon cannot
+            # put a fullscreen module over it or lock the session.
+            # Kept here, not looked up later: once the window has closed,
+            # get_application() is None and the inhibitor could not be released.
+            app = self.get_application()
+            cookie = app.inhibit(
+                self, Gtk.ApplicationInhibitFlags.IDLE, _("Previewing a screensaver module"))
+            state = {"name": name, "proc": proc, "button": button, "app": app, "cookie": cookie,
+                     "stopped": False, "started": GLib.get_monotonic_time()}
+            self.preview = state
+            button.set_icon_name("media-playback-stop-symbolic")
+            button.set_tooltip_text(_("Stop preview"))
+            proc.communicate_utf8_async(
+                None, None, lambda p, result: self.preview_ended(state, p, result))
+
+        def preview_ended(self, state, proc, result):
+            try:
+                _ok, _out, err = proc.communicate_utf8_finish(result)
+            except GLib.Error as exc:
+                err = exc.message
+            # Still held only if the module exited by itself; stop_preview has
+            # already released it otherwise.
+            self.release_inhibitor(state)
+            state["button"].set_icon_name("media-playback-start-symbolic")
+            state["button"].set_tooltip_text(_("Preview"))
+            if self.preview is state:
+                self.preview = None
+            ran = (GLib.get_monotonic_time() - state["started"]) / 1e6
+            if preview_failed(proc.get_successful(), ran, state["stopped"]):
+                self.toast(_("Could not preview {}: {}").format(
+                    state["name"], (err or "").strip() or _("it exited at once")))
+
+        def stop_preview(self):
+            state, self.preview = self.preview, None
+            if state is not None:
+                state["stopped"] = True
+                # Released now, not when the process has exited: on close that
+                # comes after the application has shut down, when uninhibit is
+                # an error. preview_ended resets the button.
+                self.release_inhibitor(state)
+                state["proc"].send_signal(15)  # SIGTERM
+
+        @staticmethod
+        def release_inhibitor(state):
+            cookie, state["cookie"] = state["cookie"], 0
+            if cookie:
+                state["app"].uninhibit(cookie)
+
         def on_close(self, *_args):
+            self.stop_preview()
             # Write a change made in the last half-second rather than drop it.
             if self.save_source:
                 GLib.source_remove(self.save_source)

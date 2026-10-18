@@ -218,3 +218,51 @@ func TestConfigShowThroughDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPreviewArgv(t *testing.T) {
+	f := fixtureFinder(t, "atlantis", "sonar")
+	// A helper binary: executable, but with no config XML.
+	if err := os.WriteFile(filepath.Join(f.BinDir, "xscreensaver-getimage"), nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := previewArgv(f, "atlantis", defaultPreviewGeometry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(f.BinDir, "atlantis"), "-window", "-geometry", "1280x720"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("argv = %q, want %q", got, want)
+	}
+
+	// sonar is in the default EXCLUDE; a preview ignores selection.
+	if _, err := previewArgv(f, "sonar", "640x360"); err != nil {
+		t.Errorf("excluded module refused: %v", err)
+	}
+
+	for _, tc := range []struct{ name, geometry string }{
+		{"flame", "1280x720"},                 // not installed
+		{"xscreensaver-getimage", "1280x720"}, // helper binary
+		{"../atlantis", "1280x720"},           // path games
+		{"atlantis", "1280"},                  // bad geometry
+		{"atlantis", "0x720"},
+		{"atlantis", "1280x720+0+0"},
+	} {
+		if _, err := previewArgv(f, tc.name, tc.geometry); err == nil {
+			t.Errorf("previewArgv(%q, %q) succeeded", tc.name, tc.geometry)
+		}
+	}
+}
+
+func TestPreviewCommandErrors(t *testing.T) {
+	t.Setenv("DISPLAY", ":0")
+	for _, args := range [][]string{nil, {"a", "b"}} {
+		if err := dispatch("preview", args); err == nil {
+			t.Errorf("preview %q succeeded", args)
+		}
+	}
+	t.Setenv("DISPLAY", "")
+	if err := dispatch("preview", []string{"atlantis"}); err == nil || !strings.Contains(err.Error(), "DISPLAY") {
+		t.Errorf("preview without DISPLAY: %v", err)
+	}
+}

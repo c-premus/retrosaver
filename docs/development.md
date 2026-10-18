@@ -177,6 +177,13 @@ Rules it follows:
   `gui/po/POTFILES` lists the sources for `xgettext` when translations arrive.
 - **The service toggle runs `retrosaver setup` and `teardown`**, so do not flip it
   while testing on a host whose daemon you depend on.
+- **A preview is `retrosaver preview <module>`**, which `exec`s the module in an ordinary
+  window, so the app's child process is the module and SIGTERM stops it. While one runs,
+  the app holds a GTK idle inhibitor, the mechanism `scripts/demo.sh` relies on, so the
+  daemon stays quiet. **Release the inhibitor when the preview is stopped, not when the
+  process exits.** On close, the exit arrives after the application has shut down, and
+  `uninhibit` then is a GLib CRITICAL that crashed the process. The window tests'
+  mutation check, and CI's CRITICAL grep, catch it.
 
 ### Packaging for other distributions
 

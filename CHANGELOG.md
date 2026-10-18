@@ -20,6 +20,10 @@ All notable changes to this project are documented here. The format follows
   architecture-independent package, so the daemon still needs no Python or GTK. Install it
   with `sudo apt install retrosaver-gtk`. Nothing in it is Debian-specific, and
   `docs/development.md` has notes for packaging it elsewhere, such as the Fedora COPR.
+  A play button on each module previews it in a window before you pick it, and holds
+  the screensaver off meanwhile.
+- **`retrosaver preview [--geometry WxH] <module>`** shows any installed module in an
+  ordinary window, without touching a running daemon.
 - **`retrosaver config show [--json]` and `retrosaver config set KEY=value...`** print and
   change the settings from the command line. `set` keeps the file's comments and layout,
   validates everything before writing, and replaces the file in one rename, so a mistake

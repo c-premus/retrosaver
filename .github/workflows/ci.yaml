@@ -229,3 +229,9 @@ jobs:
             echo "::error::window tests were skipped; see the log above"
             exit 1
           fi
+          # GLib reports misuse (a call on an object already torn down, say) as
+          # a CRITICAL and carries on, so a test can pass over one.
+          if grep -q 'CRITICAL' /tmp/window.log; then
+            echo "::error::GLib CRITICAL during the window tests; see the log above"
+            exit 1
+          fi

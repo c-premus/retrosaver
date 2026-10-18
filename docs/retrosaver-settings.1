@@ -34,14 +34,21 @@ in
 mode the ticked ones are written to
 .BR INCLUDE .
 .PP
+Each module's play button shows it in a window of its own, through
+.BR "retrosaver preview" .
+Pressing it again, or another module's, stops it, as does closing either window. While a
+preview is open the app holds an idle inhibitor, so the screensaver does not start and
+the session does not lock over it.
+.PP
 Changes are saved half a second after the last one, with no Apply button, and a running
 daemon picks them up by itself.
 .SH NOTES
 The window never reads or writes the configuration file directly. It runs
 .BR "retrosaver config show \-\-json" ,
-.B retrosaver config set
+.BR "retrosaver config set" ,
+.B "retrosaver list \-\-all \-\-json"
 and
-.BR "retrosaver list \-\-all \-\-json" ,
+.BR "retrosaver preview" ,
 so the file is parsed and validated in one place. A file that does not parse is reported
 and nothing is edited until it is fixed.
 .SH ENVIRONMENT

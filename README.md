@@ -196,7 +196,8 @@ config file:
   sets the timings, in minutes, and what a second monitor shows.
 - **Modules** lists every installed module with its description, so you can tick the
   ones the screensaver may show: either every module except the unticked ones, or only
-  the ticked ones.
+  the ticked ones. The play button on each row previews that module in a window first,
+  and holds the screensaver off while it's open.
 
 <p>
   <img src="docs/screenshots/general.png" width="400" alt="The General page: a switch to run the screensaver, the start delay, module switching, screen lock and screen-off timings, and the monitor setting">
@@ -257,6 +258,7 @@ retrosaver list              # print the modules that would be picked from
 retrosaver list --all --json # every installed module, with descriptions
 retrosaver config show       # the settings in effect
 retrosaver config set SAVER_DELAY=600 MONITORS=different   # edit, keeping comments
+retrosaver preview atlantis  # look at a module in an ordinary window
 retrosaver run atlantis      # launch one module now, even one EXCLUDE lists
 retrosaver run atlantis flame   # one module per monitor, in monitor order
 retrosaver stop              # tear it down

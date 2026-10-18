@@ -87,6 +87,10 @@ STUB_RETROSAVER = textwrap.dedent("""\
           echo disabled > "$STUB_DIR/enabled"; echo inactive > "$STUB_DIR/active"
         fi
         exit 0 ;;
+      preview)
+        if [ -e "$STUB_DIR/fail-preview" ]; then echo "no display (test)" >&2; exit 1; fi
+        echo "preview $2 $$" >> "$STUB_DIR/previews"
+        exec sleep 60 ;;
       config)
         if [ "$2" = set ] && [ -e "$STUB_DIR/fail-set" ]; then
           echo "config set failed (test)" >&2; exit 1
@@ -230,6 +234,14 @@ class WindowTest(unittest.TestCase):
 
             GLib.timeout_add(50, tick)
 
+        # PyGObject prints an exception raised in a signal handler or other
+        # callback and carries on, so a broken callback would leave the test
+        # green. Route those to the test instead.
+        import sys
+        previous_hook = sys.excepthook
+        sys.excepthook = lambda kind, value, tb: state.update(error=state["error"] or value)
+        self.addCleanup(setattr, sys, "excepthook", previous_hook)
+
         # The class's own do_activate would make a second window.
         app.do_activate = lambda: None
         app.connect("activate", activate)
@@ -339,6 +351,98 @@ class WindowTest(unittest.TestCase):
                 rows.append(row)
             row = row.get_next_sibling()
         return rows
+
+    # ---- preview --------------------------------------------------------
+
+    def previews(self):
+        """[(module, pid)] for every preview the stub has started."""
+        try:
+            with open(os.path.join(self.stub, "previews")) as f:
+                return [(line.split()[1], int(line.split()[2])) for line in f]
+        except FileNotFoundError:
+            return []
+
+    @staticmethod
+    def alive(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        # A reaped child is gone; an unreaped one shows as a zombie.
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().split(") ", 1)[1][0] != "Z"
+
+    def gone(self, pid):
+        return lambda: not os.path.exists(f"/proc/{pid}") or not self.alive(pid)
+
+    def test_preview_starts_stops_and_switches(self):
+        a, b = self.names[0], self.names[1]
+
+        def scenario(w):
+            yield self.loaded(w)
+            play_a, play_b = w.play_buttons[a], w.play_buttons[b]
+            play_a.emit("clicked")
+            yield lambda: len(self.previews()) == 1
+            name, pid_a = self.previews()[0]
+            self.assertEqual(name, a)
+            self.assertTrue(self.alive(pid_a))
+            self.assertEqual(play_a.get_icon_name(), "media-playback-stop-symbolic")
+
+            # Another module's button stops the first and starts the second.
+            play_b.emit("clicked")
+            yield lambda: len(self.previews()) == 2
+            yield self.gone(pid_a)
+            name, pid_b = self.previews()[1]
+            self.assertEqual(name, b)
+            yield lambda: play_a.get_icon_name() == "media-playback-start-symbolic"
+            self.assertEqual(play_b.get_icon_name(), "media-playback-stop-symbolic")
+
+            # The same button again stops it, and lets the screensaver back
+            # at once rather than whenever the process gets round to exiting.
+            # (Under Xvfb there is no session manager, so the cookie is 0
+            # throughout; on a real session this is a live inhibitor.)
+            running = w.preview
+            play_b.emit("clicked")
+            self.assertEqual(running["cookie"], 0, "the idle inhibitor outlived Stop")
+            yield self.gone(pid_b)
+            yield lambda: play_b.get_icon_name() == "media-playback-start-symbolic"
+            self.assertIsNone(w.preview)
+
+        self.drive(scenario)
+
+    def test_closing_the_window_stops_the_preview(self):
+        pids = []
+
+        def scenario(w):
+            yield self.loaded(w)
+            w.play_buttons[self.names[0]].emit("clicked")
+            yield lambda: self.previews()
+            pids.append(self.previews()[0][1])
+            w.close()
+            yield lambda: True
+
+        self.drive(scenario)
+        deadline = time.monotonic() + STEP_TIMEOUT_S
+        while not self.gone(pids[0])() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(self.gone(pids[0])(), "the preview outlived the window")
+
+    def test_a_preview_that_cannot_start_is_reported(self):
+        open(os.path.join(self.stub, "fail-preview"), "w").close()
+        toasts = []
+
+        def scenario(w):
+            yield self.loaded(w)
+            original = w.toast
+            w.toast = lambda message: (toasts.append(message), original(message))
+            play = w.play_buttons[self.names[0]]
+            play.emit("clicked")
+            yield lambda: toasts
+            self.assertIn("no display (test)", toasts[0])
+            yield lambda: play.get_icon_name() == "media-playback-start-symbolic"
+            self.assertIsNone(w.preview)
+
+        self.drive(scenario)
 
     # ---- the service switch ---------------------------------------------
 

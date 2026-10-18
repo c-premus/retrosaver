@@ -69,6 +69,17 @@ class Selection(unittest.TestCase):
             self.assertEqual(picked, ticked, f"only_ticked={only}")
 
 
+class Preview(unittest.TestCase):
+    def test_args(self):
+        self.assertEqual(settings.preview_args("atlantis"), ["preview", "atlantis"])
+
+    def test_only_an_early_unexpected_exit_is_a_failure(self):
+        self.assertTrue(settings.preview_failed(False, 0.3, False))
+        self.assertFalse(settings.preview_failed(True, 0.3, False))   # exited cleanly
+        self.assertFalse(settings.preview_failed(False, 0.3, True))   # we stopped it
+        self.assertFalse(settings.preview_failed(False, 30, False))   # user closed it
+
+
 class Service(unittest.TestCase):
     def test_states(self):
         self.assertEqual(settings.service_state("enabled\n", "active\n"), "running")
