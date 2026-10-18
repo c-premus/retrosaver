@@ -1,0 +1,2 @@
+# Files with translatable strings, for xgettext --files-from.
+gui/retrosaver-settings

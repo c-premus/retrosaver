@@ -146,11 +146,20 @@ Runtime commands:
   run [module...]     Launch modules fullscreen, one per monitor in order;
                       picks at random when omitted
   stop                Tear down a running module (safe at any time)
-  list                Print the discovered, selectable modules
+  list [--all] [--json]
+                      Print the selectable modules, or with --all every installed
+                      one; --json adds labels, descriptions and selection
 
 Installation commands:
   setup               Preflight, enable the user unit, take ownership of idle-delay
   teardown            Reverse setup and restore idle-delay
+
+Configuration:
+  config show [--json]
+                      Print the settings in effect
+  config set KEY=value...
+                      Change settings in the config file, keeping its comments;
+                      a running daemon reloads them by itself
 
 Other:
   version             Print the version
@@ -182,6 +191,8 @@ func dispatch(cmd string, args []string) error {
 		return cmdSetup(args)
 	case "teardown":
 		return cmdTeardown(args)
+	case "config":
+		return cmdConfig(args)
 	case "version", "--version", "-v":
 		fmt.Println(versionString())
 		return nil
@@ -461,6 +472,8 @@ func isDigits(s string) bool {
 
 func cmdList(args []string) error {
 	fset := flag.NewFlagSet("list", flag.ExitOnError)
+	all := fset.Bool("all", false, "list every installed module, selected or not")
+	asJSON := fset.Bool("json", false, "print JSON with labels, descriptions and selection")
 	// flag.ExitOnError: Parse exits the process on a bad flag, so it never
 	// returns a non-nil error here and checking one is dead code.
 	_ = fset.Parse(args)
@@ -469,15 +482,7 @@ func cmdList(args []string) error {
 	if err != nil {
 		return err
 	}
-
-	available, err := modules.NewFinder().Available(cfg.Include, cfg.Exclude)
-	if err != nil {
-		return err
-	}
-	for _, name := range available {
-		fmt.Println(name)
-	}
-	return nil
+	return listModules(os.Stdout, modules.NewFinder(), cfg, *all, *asJSON)
 }
 
 const (
@@ -659,7 +664,7 @@ func installConfig(path string) (bool, error) {
 	// the compiled-in defaults so setup also works from a source build.
 	content, err := os.ReadFile(exampleConfigPath)
 	if err != nil {
-		content = []byte(defaultConfigFile())
+		content = []byte(config.DefaultFile())
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return false, fmt.Errorf("setup: creating %s: %w", filepath.Dir(path), err)
@@ -668,44 +673,6 @@ func installConfig(path string) (bool, error) {
 		return false, fmt.Errorf("setup: writing %s: %w", path, err)
 	}
 	return true, nil
-}
-
-// defaultConfigFile renders config.Defaults as a config file, so a source
-// build produces the same settings the package's example documents.
-func defaultConfigFile() string {
-	d := config.Defaults()
-	return fmt.Sprintf(`# Seconds of idle before the screensaver starts.
-SAVER_DELAY=%d
-
-# Seconds each module stays on screen before the saver switches to another
-# one. 0 disables switching, leaving the first module up until the lock.
-CYCLE_AFTER=%d
-
-# What a second monitor shows: "same" runs one module on every monitor,
-# "different" picks a different module for each.
-MONITORS=%s
-
-# Seconds after the screensaver starts before the session locks. 0 disables.
-LOCK_AFTER=%d
-
-# Seconds after locking before the display powers off. 0 disables.
-BLANK_AFTER=%d
-
-# Space-separated module names never to pick. These need image assets,
-# network access, or elevated capabilities and misbehave standalone.
-EXCLUDE="%s"
-
-# Optional: if non-empty, pick only from this space-separated list.
-# e.g. INCLUDE="atlantis flame ifs apollonian discrete coral sierpinski"
-INCLUDE="%s"
-`,
-		int(d.SaverDelay.Seconds()),
-		int(d.CycleAfter.Seconds()),
-		d.Monitors,
-		int(d.LockAfter.Seconds()),
-		int(d.BlankAfter.Seconds()),
-		strings.Join(d.Exclude, " "),
-		strings.Join(d.Include, " "))
 }
 
 func systemctl(args ...string) error {

@@ -23,13 +23,13 @@ import (
 // different settings from the ones the package documents.
 func TestDefaultConfigFileRoundTripsThroughTheParser(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "retrosaver.conf")
-	if err := os.WriteFile(path, []byte(defaultConfigFile()), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(config.DefaultFile()), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	got, err := config.Load(path)
 	if err != nil {
-		t.Fatalf("config.Load on the generated file = %v\n---\n%s", err, defaultConfigFile())
+		t.Fatalf("config.Load on the generated file = %v\n---\n%s", err, config.DefaultFile())
 	}
 
 	want := config.Defaults()
@@ -308,7 +308,7 @@ func TestInstallConfigFallsBackToTheCompiledDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(b) != defaultConfigFile() {
+	if string(b) != config.DefaultFile() {
 		t.Error("installConfig did not fall back to the compiled-in defaults")
 	}
 }

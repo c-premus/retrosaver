@@ -113,13 +113,26 @@ gpg --batch --yes --dearmor --output retrosaver-archive-keyring.gpg "$public_key
 gpgv --keyring ./retrosaver-archive-keyring.gpg "dists/$suite/InRelease"
 gpgv --keyring ./retrosaver-archive-keyring.gpg "dists/$suite/Release.gpg" "dists/$suite/Release"
 
+# An Architecture: all package (retrosaver-gtk) is listed in every arch's
+# index, so it counts once per arch; an arch-specific one counts once.
+arch_debs=0
+all_debs=0
+for deb in "${debs[@]}"; do
+    case "$deb" in
+        *_all.deb) all_debs=$((all_debs + 1)) ;;
+        *) arch_debs=$((arch_debs + 1)) ;;
+    esac
+done
+n_arches="$(wc -w <<<"$arches")"
+expected=$((arch_debs + all_debs * n_arches))
 indexed=0
 for arch in $arches; do
     n="$(grep -c '^Package: ' "dists/$suite/$component/binary-$arch/Packages" || true)"
     indexed=$((indexed + n))
 done
-if [ "$indexed" -ne "${#debs[@]}" ]; then
-    echo "build-apt-repo.sh: indexed $indexed packages but the pool holds ${#debs[@]} .debs" >&2
+if [ "$indexed" -ne "$expected" ]; then
+    echo "build-apt-repo.sh: indexed $indexed entries but the pool's ${#debs[@]} .debs" \
+        "($arch_debs per-arch, $all_debs for all arches) should give $expected" >&2
     exit 1
 fi
 
@@ -130,7 +143,9 @@ fi
 # alone; @NAME@ placeholders are filled in afterwards.
 versions=""
 for arch in $arches; do
-    list="$(awk '/^Version: / { print $2 }' "dists/$suite/$component/binary-$arch/Packages" \
+    # The daemon's versions only: retrosaver-gtk shares them, one for one.
+    list="$(awk '/^Package: / { pkg = $2 } /^Version: / && pkg == "retrosaver" { print $2 }' \
+        "dists/$suite/$component/binary-$arch/Packages" \
         | sort -rV | paste -sd ' ' | sed 's/ /, /g')"
     versions="$versions<li><strong>$arch</strong>: $list</li>"
 done
@@ -203,6 +218,9 @@ retrosaver setup</code></pre>
 <p>From then on, <code>apt upgrade</code> picks up each new release. The package installs
 the same key file and keeps it up to date, so you never need to fetch it again. The README explains
 what <code>retrosaver setup</code> changes and how to remove everything again.</p>
+<p>For a settings window in the GNOME app grid, install the optional
+<code>retrosaver-gtk</code> package too:</p>
+<pre><code>sudo apt install retrosaver-gtk</code></pre>
 
 <h2>What is here</h2>
 <p>Suite <code>stable</code>, component <code>main</code>. Every version that has a
@@ -227,4 +245,4 @@ if ! grep -q "$fpr" index.html || grep -qE '@[A-Z]+@' index.html; then
     exit 1
 fi
 
-echo "apt repository built: ${#debs[@]} packages, signed by $fpr"
+echo "apt repository built: ${#debs[@]} .debs, $indexed index entries, signed by $fpr"

@@ -83,6 +83,7 @@ jobs:
           # nfpm does not compress man pages, and Debian wants them gzipped.
           # -n omits the timestamp so the result is reproducible.
           gzip -9 -n -c docs/retrosaver.1 > dist/retrosaver.1.gz
+          gzip -9 -n -c docs/retrosaver-settings.1 > dist/retrosaver-settings.1.gz
 
       - name: Install nfpm
         run: |
@@ -103,6 +104,8 @@ jobs:
             GOARCH="$arch" nfpm pkg --packager deb --target dist/
           done
           rm -f dist/retrosaver
+          # The settings app is Architecture: all, so it is built once.
+          nfpm pkg --config nfpm-gtk.yaml --packager deb --target dist/
           ls -la dist/
 
       - name: Verify package metadata
@@ -113,7 +116,7 @@ jobs:
             dpkg-deb --contents "$deb"
           done
 
-      # Provenance for the four published files. Cheap, and it lets anyone
+      # Provenance for the five published files. Cheap, and it lets anyone
       # verify a downloaded .deb came from this repo and this workflow:
       #   gh attestation verify retrosaver_X.Y.Z_amd64.deb -R c-premus/retrosaver
       - name: Attest build provenance
@@ -155,11 +158,12 @@ jobs:
 
           # Assert the finished state rather than trusting the exit codes above.
           # A green run that published nothing is the failure mode worth
-          # spending four lines to rule out.
+          # spending a few lines to rule out.
           count="$(gh release view "$TAG" --json assets --jq '.assets | length')"
           echo "Release ${TAG} has ${count} assets."
-          if [ "$count" -ne 4 ]; then
-            echo "::error::expected 4 assets, found ${count}"
+          # Two daemon .debs, the settings app's .deb, two raw binaries.
+          if [ "$count" -ne 5 ]; then
+            echo "::error::expected 5 assets, found ${count}"
             exit 1
           fi
 

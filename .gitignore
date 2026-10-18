@@ -21,3 +21,6 @@
 # Go workspace
 go.work
 go.work.sum
+
+# Python bytecode from running the settings app tests
+__pycache__/

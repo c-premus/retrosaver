@@ -11,6 +11,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A settings app.** The new `retrosaver-gtk` package adds Retrosaver to the GNOME app
+  grid: a GTK 4 window to turn the screensaver on and off, set the timings and the monitor
+  mode, and tick the modules it may show, each listed with its description. Changes save
+  as you make them, and the daemon reloads them by itself. It is a separate,
+  architecture-independent package, so the daemon still needs no Python or GTK. Install it
+  with `sudo apt install retrosaver-gtk`.
+- **`retrosaver config show [--json]` and `retrosaver config set KEY=value...`** print and
+  change the settings from the command line. `set` keeps the file's comments and layout,
+  validates everything before writing, and replaces the file in one rename, so a mistake
+  leaves it untouched.
+- **`retrosaver list --all --json`** lists every installed module with its name,
+  description and whether the current settings select it.
+
 ## [0.6.2] - 2026-10-17
 
 ### Fixed

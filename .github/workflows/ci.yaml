@@ -175,3 +175,16 @@ jobs:
           printf 'checking %s\n' "${scripts[@]}"
           shellcheck "${scripts[@]}"
           bash -n tests/smoke.sh
+
+      # The settings app (gui/, packaged as retrosaver-gtk). Its logic is
+      # tested without GTK, so the runner needs no display and no GTK
+      # bindings; the desktop entry and AppStream metainfo are checked by the
+      # same validators GNOME Software and the distributions use. The .deb
+      # itself is built and listed by release.yaml's "Verify package metadata".
+      - name: settings app (GATE)
+        run: |
+          sudo apt-get install -y desktop-file-utils appstream
+          python3 -m py_compile gui/retrosaver-settings
+          python3 -m unittest discover -s gui -v
+          desktop-file-validate gui/us.prem.Retrosaver.desktop
+          appstreamcli validate --no-net gui/us.prem.Retrosaver.metainfo.xml

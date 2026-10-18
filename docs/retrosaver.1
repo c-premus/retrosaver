@@ -100,8 +100,48 @@ Never restore
 even when no daemon is running.
 .RE
 .TP
-.B list
+.B list \fR[\fB\-\-all\fR] [\fB\-\-json\fR]
 Print the discovered, selectable modules, one per line.
+.RS
+.TP
+.B \-\-all
+Print every installed module, including those
+.B INCLUDE
+and
+.B EXCLUDE
+rule out.
+.TP
+.B \-\-json
+Print a JSON array instead, one object per module with its
+.BR name ,
+its
+.B label
+and the first paragraph of its
+.B description
+from the module's config XML, and whether it is
+.BR selected .
+An empty selection is not an error here, as it is for the plain list.
+.RE
+.SS Configuration
+.TP
+.B config show \fR[\fB\-\-json\fR]
+Print the settings in effect: the configuration file's, over the built\-in defaults.
+With
+.BR \-\-json ,
+print an object with the file's
+.B path
+and whether it
+.BR exists ,
+and one member per key, delays in seconds and module lists as arrays. A file that does
+not parse is an error rather than a print of the defaults.
+.TP
+.BI "config set " KEY = value " " \fR...
+Change settings in the configuration file, creating it from the defaults if it does not
+exist. Comments, blank lines, unknown keys and the order of the lines are kept; for a key
+assigned more than once, the last assignment, which is the one that counts, is changed.
+The change is all or nothing: an unknown key or an invalid value is reported, and the
+file is left as it was. The new file replaces the old one in a single rename, and a
+running daemon reloads it by itself.
 .SS Installation
 .TP
 .B setup
@@ -374,6 +414,7 @@ Every state transition logs to standard error, so
 .B journalctl \-\-user \-u retrosaver
 reads as a clear trace.
 .SH SEE ALSO
+.BR retrosaver\-settings (1),
 .BR loginctl (1),
 .BR gsettings (1),
 .BR systemctl (1),

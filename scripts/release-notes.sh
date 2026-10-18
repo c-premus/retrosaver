@@ -62,3 +62,14 @@ https://github.com/c-premus/retrosaver#from-the-apt-repository
 
 The README explains what \`setup\` changes and how \`retrosaver teardown\` undoes it.
 NOTES
+
+# The settings app ships from the release that added nfpm-gtk.yaml onward. A
+# release workflow runs this from the tag's own checkout, so the file's
+# presence is exactly whether this version has that package.
+if [ -e "$(dirname "$0")/../nfpm-gtk.yaml" ]; then
+    cat <<NOTES
+
+For a settings window, install \`retrosaver-gtk_${version}_all.deb\` as well, or
+\`sudo apt install retrosaver-gtk\` from the apt repository.
+NOTES
+fi

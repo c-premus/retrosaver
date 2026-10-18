@@ -1,0 +1,70 @@
+# nfpm manifest for retrosaver-gtk, the settings app. A separate package so
+# the daemon keeps no GUI dependencies: the Debian pattern of
+# software-properties-common and software-properties-gtk. Architecture "all",
+# because the app is a Python script; it is built once per release.
+#   VERSION=1.2.3 nfpm pkg --config nfpm-gtk.yaml --packager deb --target dist/
+name: retrosaver-gtk
+arch: all
+version: ${VERSION}
+section: x11
+priority: optional
+maintainer: Chris <63758245+c-premus@users.noreply.github.com>
+description: |
+  Settings app for retrosaver.
+  A GTK 4 and libadwaita window for retrosaver, which brings classic
+  XScreenSaver display modules back to GNOME on Wayland: when the
+  screensaver starts, how often it switches modules, when the session locks
+  and the display turns off, and which modules can appear.
+vendor: Chris
+homepage: https://github.com/c-premus/retrosaver
+license: MIT
+
+changelog: ./changelog.yaml
+
+depends:
+  # Pinned exactly: the app is written against the binary's `config` and
+  # `list --json` output, which ship in the same release.
+  - retrosaver (= ${VERSION})
+  - python3 (>= 3.10)
+  - python3-gi
+  - gir1.2-gtk-4.0
+  - gir1.2-adw-1
+
+# dpkg's own triggers refresh the icon cache, the desktop database and the
+# AppStream cache when these paths change, so no maintainer scripts are needed.
+contents:
+  - src: ./gui/retrosaver-settings
+    dst: /usr/bin/retrosaver-settings
+    file_info:
+      mode: 0755
+
+  - src: ./gui/us.prem.Retrosaver.desktop
+    dst: /usr/share/applications/us.prem.Retrosaver.desktop
+    file_info:
+      mode: 0644
+
+  - src: ./gui/us.prem.Retrosaver.metainfo.xml
+    dst: /usr/share/metainfo/us.prem.Retrosaver.metainfo.xml
+    file_info:
+      mode: 0644
+
+  - src: ./gui/icons/hicolor/scalable/apps/us.prem.Retrosaver.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/us.prem.Retrosaver.svg
+    file_info:
+      mode: 0644
+
+  - src: ./gui/icons/hicolor/symbolic/apps/us.prem.Retrosaver-symbolic.svg
+    dst: /usr/share/icons/hicolor/symbolic/apps/us.prem.Retrosaver-symbolic.svg
+    file_info:
+      mode: 0644
+
+  # Gzipped into dist/ by release.yaml, as for the daemon's page.
+  - src: ./dist/retrosaver-settings.1.gz
+    dst: /usr/share/man/man1/retrosaver-settings.1.gz
+    file_info:
+      mode: 0644
+
+  - src: ./LICENSE
+    dst: /usr/share/doc/retrosaver-gtk/copyright
+    file_info:
+      mode: 0644

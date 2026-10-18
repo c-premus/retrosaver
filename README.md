@@ -103,6 +103,9 @@ sudo apt install retrosaver
 retrosaver setup
 ```
 
+For the optional settings window, also run `sudo apt install retrosaver-gtk` (see
+[The settings app](#the-settings-app)).
+
 You only fetch the key this once. The package installs the same file and keeps it up to
 date, so a renewed key arrives with an ordinary `apt upgrade`.
 
@@ -122,6 +125,9 @@ Download the `.deb` for your architecture from the
 sudo apt install ./retrosaver_<version>_amd64.deb
 retrosaver setup
 ```
+
+For the settings window, install `retrosaver-gtk_<version>_all.deb` from the same
+release as well.
 
 To upgrade, download the newer `.deb` and run the same `apt install` command on it.
 
@@ -175,6 +181,21 @@ report packaging problems there. `retrosaver setup` and everything below apply u
 
 ## Configuration
 
+### The settings app
+
+The optional `retrosaver-gtk` package adds **Retrosaver** to the GNOME app grid, or run
+`retrosaver-settings`. It is a GTK 4 window over the same config file: it turns the
+screensaver on and off (by running `setup` and `teardown`), sets the timings in minutes and
+the monitor mode, and lists every installed module with its description, so you can tick
+the ones the screensaver may show. Changes save as you make them and the daemon picks them
+up straight away.
+
+It is a separate package so that the daemon needs no Python or GTK. It edits the file
+through `retrosaver config set`, so everything below still applies, and hand edits and
+the window can be mixed freely.
+
+### The config file
+
 `~/.config/retrosaver/retrosaver.conf` is created by `retrosaver setup` and never
 overwritten. It is a commented copy of these defaults:
 
@@ -218,6 +239,9 @@ Useful commands:
 
 ```bash
 retrosaver list              # print the modules that would be picked from
+retrosaver list --all --json # every installed module, with descriptions
+retrosaver config show       # the settings in effect
+retrosaver config set SAVER_DELAY=600 MONITORS=different   # edit, keeping comments
 retrosaver run atlantis      # launch one module now, even one EXCLUDE lists
 retrosaver run atlantis flame   # one module per monitor, in monitor order
 retrosaver stop              # tear it down

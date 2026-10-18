@@ -1,0 +1,663 @@
+#!/usr/bin/python3
+"""Retrosaver settings: a GTK 4 / libadwaita front end for retrosaver.
+
+This program never reads or writes the config file itself. Everything goes
+through `retrosaver config show --json`, `retrosaver config set` and
+`retrosaver list --all --json`, so parsing, validation and quoting live in one
+place, in the Go binary. The daemon watches the file and reloads it on its own,
+so saving needs no other step.
+
+The functions above main() are plain Python with no GTK import, so they can be
+unit-tested anywhere; gui/test_settings.py does that.
+"""
+
+import gettext
+import json
+import os
+import sys
+
+APP_ID = "us.prem.Retrosaver"
+GETTEXT_DOMAIN = "retrosaver"
+LOCALE_DIR = os.environ.get("RETROSAVER_LOCALEDIR", "/usr/share/locale")
+UNIT = "retrosaver.service"
+
+gettext.bindtextdomain(GETTEXT_DOMAIN, LOCALE_DIR)
+gettext.textdomain(GETTEXT_DOMAIN)
+_ = gettext.gettext
+
+# Used when a stage is switched back on from 0, matching config.Defaults().
+DEFAULT_SECONDS = {
+    "SAVER_DELAY": 300,
+    "CYCLE_AFTER": 300,
+    "LOCK_AFTER": 900,
+    "BLANK_AFTER": 120,
+}
+
+# How long to wait after the last change before writing, so dragging a spin
+# button or ticking several modules produces one write and one daemon reload.
+SAVE_DELAY_MS = 500
+
+
+def retrosaver_binary():
+    """The retrosaver executable: $RETROSAVER when set, for running from a
+    source tree, otherwise whatever is on PATH."""
+    return os.environ.get("RETROSAVER") or "retrosaver"
+
+
+def to_minutes(seconds):
+    """Seconds as whole minutes for a spin button, never below one."""
+    return max(1, round(seconds / 60))
+
+
+def is_whole_minutes(seconds):
+    return seconds % 60 == 0
+
+
+def set_args(updates):
+    """The `retrosaver config set` arguments for a dict of key -> value.
+    Sorted, so the command is the same whatever order the changes came in."""
+    return ["config", "set"] + [f"{k}={updates[k]}" for k in sorted(updates)]
+
+
+def selection_updates(only_ticked, ticked, all_names):
+    """The INCLUDE/EXCLUDE pair that makes exactly `ticked` selectable.
+
+    In "only ticked" mode the ticked modules become INCLUDE and EXCLUDE is
+    cleared: nothing outside INCLUDE can be picked anyway. Otherwise every
+    unticked module becomes EXCLUDE and INCLUDE is cleared. Either way the file
+    then says exactly what the window shows. Names keep discovery order.
+    """
+    if only_ticked:
+        return {
+            "INCLUDE": " ".join(n for n in all_names if n in ticked),
+            "EXCLUDE": "",
+        }
+    return {
+        "INCLUDE": "",
+        "EXCLUDE": " ".join(n for n in all_names if n not in ticked),
+    }
+
+
+def service_state(enabled_output, active_output):
+    """Summarise `systemctl --user is-enabled` / `is-active` output as
+    "running", "stopped" or "not-set-up". setup is what enables the unit, so
+    an enabled unit is a set-up one."""
+    if enabled_output.strip() != "enabled":
+        return "not-set-up"
+    if active_output.strip() == "active":
+        return "running"
+    return "stopped"
+
+
+def matches(query, module):
+    """Whether a module matches the search box: any word of the query found in
+    its name, label or description, case-insensitively."""
+    words = query.casefold().split()
+    if not words:
+        return True
+    haystack = " ".join(
+        (module["name"], module["label"], module["description"])
+    ).casefold()
+    return all(w in haystack for w in words)
+
+
+def main(argv):
+    try:
+        import gi
+
+        gi.require_version("Gtk", "4.0")
+        gi.require_version("Adw", "1")
+        from gi.repository import Adw, Gio, GLib, Gtk
+    except (ImportError, ValueError) as exc:
+        print(
+            _("retrosaver-settings needs GTK 4 and libadwaita for Python "
+              "(the python3-gi, gir1.2-gtk-4.0 and gir1.2-adw-1 packages): {}")
+            .format(exc),
+            file=sys.stderr,
+        )
+        return 1
+
+    Application, _window = gtk_classes(Adw, Gio, GLib, Gtk)
+    return Application().run(argv)
+
+
+def gtk_classes(Adw, Gio, GLib, Gtk):
+    """Define the window and application classes against the given GTK
+    modules and return (Application, Window). A function rather than module
+    level, so this file imports without GTK for the unit tests."""
+
+    def run(args, callback):
+        """Run retrosaver or systemctl without blocking the main loop and
+        call callback(ok, stdout, stderr). Never through a shell."""
+        try:
+            proc = Gio.Subprocess.new(
+                args,
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+            )
+        except GLib.Error as exc:
+            callback(False, "", exc.message)
+            return
+
+        def done(p, result):
+            try:
+                _ok, out, err = p.communicate_utf8_finish(result)
+            except GLib.Error as exc:
+                callback(False, "", exc.message)
+                return
+            callback(p.get_successful(), out or "", err or "")
+
+        proc.communicate_utf8_async(None, None, done)
+
+    def retrosaver(args, callback):
+        run([retrosaver_binary()] + args, callback)
+
+    def spin(value, upper=1440):
+        button = Gtk.SpinButton.new_with_range(1, upper, 1)
+        button.set_value(value)
+        button.set_valign(Gtk.Align.CENTER)
+        button.set_numeric(True)
+        return button
+
+    class Window(Adw.ApplicationWindow):
+        def __init__(self, app):
+            super().__init__(application=app, title=_("Retrosaver"))
+            self.set_default_size(640, 720)
+            self.set_icon_name(APP_ID)
+
+            self.config = None
+            self.modules = []
+            self.pending = {}
+            self.save_source = 0
+            self.saving = False
+            self.loading = False
+            self.service = None
+
+            self.toasts = Adw.ToastOverlay()
+            self.stack = Adw.ViewStack()
+
+            header = Adw.HeaderBar()
+            switcher = Adw.ViewSwitcher(stack=self.stack)
+            switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
+            header.set_title_widget(switcher)
+
+            menu = Gio.Menu()
+            menu.append(_("About Retrosaver"), "app.about")
+            header.pack_end(
+                Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu,
+                               tooltip_text=_("Main Menu"))
+            )
+
+            # Shown instead of the pages until the config has loaded, or when
+            # it cannot be loaded.
+            self.status = Adw.StatusPage(icon_name=APP_ID, title=_("Loading…"))
+            self.outer = Gtk.Stack()
+            self.outer.add_named(self.status, "status")
+            self.outer.add_named(self.stack, "pages")
+            self.toasts.set_child(self.outer)
+
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            box.append(header)
+            box.append(self.toasts)
+            self.toasts.set_vexpand(True)
+            self.set_content(box)
+
+            self.connect("notify::is-active", self.on_active_changed)
+            self.connect("close-request", self.on_close)
+            self.load()
+
+        # ---- loading ----------------------------------------------------
+
+        def load(self):
+            self.outer.set_visible_child_name("status")
+            self.status.set_icon_name(APP_ID)
+            self.status.set_title(_("Loading…"))
+            self.status.set_description(None)
+            self.status.set_child(None)
+            got = {}
+
+            def maybe_build():
+                if "config" in got and "modules" in got:
+                    self.config = got["config"]
+                    self.modules = got["modules"]
+                    self.build_pages()
+                    self.outer.set_visible_child_name("pages")
+                    self.refresh_service()
+
+            def on_config(ok, out, err):
+                if not ok:
+                    self.show_load_error(err)
+                    return
+                got["config"] = json.loads(out)
+                maybe_build()
+
+            def on_modules(ok, out, err):
+                if not ok:
+                    self.show_load_error(err)
+                    return
+                got["modules"] = json.loads(out)
+                maybe_build()
+
+            retrosaver(["config", "show", "--json"], on_config)
+            retrosaver(["list", "--all", "--json"], on_modules)
+
+        def show_load_error(self, message):
+            # Editing is impossible here on purpose: writing settings over a
+            # file that would not parse would discard whatever the user meant.
+            self.outer.set_visible_child_name("status")
+            self.status.set_icon_name("dialog-error-symbolic")
+            self.status.set_title(_("Settings could not be read"))
+            self.status.set_description(GLib.markup_escape_text(message.strip()))
+            buttons = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER)
+            retry = Gtk.Button(label=_("Try Again"))
+            retry.add_css_class("pill")
+            retry.connect("clicked", lambda *_a: self.load())
+            buttons.append(retry)
+            if self.config_path_guess():
+                edit = Gtk.Button(label=_("Open Config File"))
+                edit.add_css_class("pill")
+                edit.connect("clicked", self.on_open_config)
+                buttons.append(edit)
+            self.status.set_child(buttons)
+
+        def config_path_guess(self):
+            base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+            path = os.path.join(base, "retrosaver", "retrosaver.conf")
+            return path if os.path.exists(path) else None
+
+        def on_open_config(self, *_args):
+            path = self.config_path_guess()
+            if path:
+                try:
+                    Gio.AppInfo.launch_default_for_uri(
+                        Gio.File.new_for_path(path).get_uri(), None)
+                except GLib.Error as exc:
+                    self.toast(exc.message)
+
+        # ---- pages ------------------------------------------------------
+
+        def build_pages(self):
+            for name in ("general", "modules"):
+                old = self.stack.get_child_by_name(name)
+                if old is not None:
+                    self.stack.remove(old)
+            self.loading = True
+            general = self.build_general()
+            self.stack.add_titled_with_icon(
+                general, "general", _("General"), "preferences-system-symbolic")
+            self.stack.add_titled_with_icon(
+                self.build_modules(), "modules", _("Modules"), "view-grid-symbolic")
+            self.loading = False
+
+        def build_general(self):
+            page = Adw.PreferencesPage()
+
+            # Service.
+            group = Adw.PreferencesGroup(title=_("Screensaver"))
+            self.service_row = Adw.ActionRow(title=_("Run the screensaver"))
+            # Insensitive until systemctl has said what state the unit is in.
+            self.service_switch = Gtk.Switch(valign=Gtk.Align.CENTER, sensitive=False)
+            self.service_handler = self.service_switch.connect(
+                "notify::active", self.on_service_toggled)
+            self.service_row.add_suffix(self.service_switch)
+            self.service_row.set_activatable_widget(self.service_switch)
+            group.add(self.service_row)
+            page.add(group)
+
+            # Timings.
+            group = Adw.PreferencesGroup(title=_("Timing"))
+            row = Adw.ActionRow(
+                title=_("Start after"),
+                subtitle=self.seconds_note("SAVER_DELAY", _("Minutes without input")))
+            self.saver_spin = spin(to_minutes(self.config["SAVER_DELAY"]))
+            self.saver_spin.connect("value-changed", self.on_spin, "SAVER_DELAY")
+            row.add_suffix(self.saver_spin)
+            row.set_activatable_widget(self.saver_spin)
+            group.add(row)
+
+            self.cycle_row, self.cycle_spin = self.stage_row(
+                group, "CYCLE_AFTER", _("Switch modules"),
+                _("Show another module while the screensaver runs"), _("Every"))
+            self.lock_row, self.lock_spin = self.stage_row(
+                group, "LOCK_AFTER", _("Lock the screen"),
+                _("Hand over to the GNOME lock screen"),
+                _("Minutes after the screensaver starts"))
+            self.blank_row, self.blank_spin = self.stage_row(
+                group, "BLANK_AFTER", _("Turn the screen off"),
+                _("Only while the screen is locked"), _("Minutes after locking"))
+            self.blank_row.set_sensitive(self.config["LOCK_AFTER"] > 0)
+            page.add(group)
+
+            # Monitors.
+            group = Adw.PreferencesGroup(title=_("Monitors"))
+            self.monitors_row = Adw.ComboRow(
+                title=_("Each monitor shows"),
+                model=Gtk.StringList.new([
+                    _("The same module"),
+                    _("Its own module"),
+                ]))
+            self.monitors_row.set_selected(
+                1 if self.config["MONITORS"] == "different" else 0)
+            self.monitors_row.connect("notify::selected", self.on_monitors)
+            group.add(self.monitors_row)
+            page.add(group)
+            return page
+
+        def seconds_note(self, key, fallback):
+            # Compressed test timings are not whole minutes. Say so rather than
+            # silently showing a rounded value as if it were the real one.
+            seconds = self.config[key]
+            if seconds and not is_whole_minutes(seconds):
+                return gettext.ngettext(
+                    "Set to {} second in the config file",
+                    "Set to {} seconds in the config file", seconds).format(seconds)
+            return fallback
+
+        def stage_row(self, group, key, title, subtitle, inner_title):
+            seconds = self.config[key]
+            row = Adw.ExpanderRow(
+                title=title, subtitle=subtitle, show_enable_switch=True)
+            row.set_enable_expansion(seconds > 0)
+            row.set_expanded(False)
+            inner = Adw.ActionRow(
+                title=inner_title, subtitle=self.seconds_note(key, ""))
+            button = spin(to_minutes(seconds or DEFAULT_SECONDS[key]))
+            button.connect("value-changed", self.on_spin, key)
+            inner.add_suffix(button)
+            inner.set_activatable_widget(button)
+            row.add_row(inner)
+            row.connect("notify::enable-expansion", self.on_stage_toggled, key, button)
+            group.add(row)
+            return row, button
+
+        def build_modules(self):
+            only_ticked = bool(self.config["INCLUDE"])
+            self.ticked = {m["name"] for m in self.modules if m["selected"]}
+            self.names = [m["name"] for m in self.modules]
+
+            page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            clamp_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                                margin_top=12, margin_bottom=12,
+                                margin_start=12, margin_end=12)
+
+            self.search = Gtk.SearchEntry(placeholder_text=_("Search modules"))
+            self.search.connect("search-changed", lambda *_a: self.list.invalidate_filter())
+            clamp_box.append(self.search)
+
+            options = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+            options.add_css_class("boxed-list")
+            self.mode_row = Adw.ComboRow(
+                title=_("Pick from"),
+                model=Gtk.StringList.new([
+                    _("All modules except unticked ones"),
+                    _("Only ticked modules"),
+                ]))
+            self.mode_row.set_selected(1 if only_ticked else 0)
+            self.mode_row.connect("notify::selected", lambda *_a: self.on_selection_changed())
+            options.append(self.mode_row)
+            clamp_box.append(options)
+
+            bar = Gtk.Box(spacing=6)
+            self.count_label = Gtk.Label(xalign=0, hexpand=True)
+            self.count_label.add_css_class("dim-label")
+            bar.append(self.count_label)
+            for label, value in ((_("Tick All"), True), (_("Untick All"), False)):
+                button = Gtk.Button(label=label)
+                button.add_css_class("flat")
+                button.connect("clicked", self.on_tick_all, value)
+                bar.append(button)
+            clamp_box.append(bar)
+
+            self.list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+            self.list.add_css_class("boxed-list")
+            self.checks = {}
+            for m in self.modules:
+                row = Adw.ActionRow(title=m["label"], subtitle=m["description"])
+                row.set_use_markup(False)
+                row.set_subtitle_lines(2)
+                row.set_tooltip_text(m["name"])
+                check = Gtk.CheckButton(active=m["name"] in self.ticked,
+                                        valign=Gtk.Align.CENTER)
+                check.connect("toggled", self.on_check, m["name"])
+                row.add_prefix(check)
+                row.set_activatable_widget(check)
+                name = Gtk.Label(label=m["name"], valign=Gtk.Align.CENTER)
+                name.add_css_class("dim-label")
+                name.add_css_class("caption")
+                row.add_suffix(name)
+                self.checks[m["name"]] = check
+                self.list.append(row)
+            # Rows are appended in self.modules order, so a row's index is its
+            # module. Python attributes on a GTK wrapper are not kept reliably.
+            self.list.set_filter_func(
+                lambda row: matches(self.search.get_text(), self.modules[row.get_index()]))
+            clamp_box.append(self.list)
+
+            clamp = Adw.Clamp(child=clamp_box)
+            scroller = Gtk.ScrolledWindow(child=clamp, vexpand=True,
+                                          hscrollbar_policy=Gtk.PolicyType.NEVER)
+            page.append(scroller)
+            self.update_count()
+            return page
+
+        # ---- changes ----------------------------------------------------
+
+        def on_spin(self, button, key):
+            if self.loading:
+                return
+            self.queue({key: int(button.get_value()) * 60})
+
+        def on_stage_toggled(self, row, _pspec, key, button):
+            if self.loading:
+                return
+            on = row.get_enable_expansion()
+            self.queue({key: int(button.get_value()) * 60 if on else 0})
+            if key == "LOCK_AFTER":
+                # Blanking without locking is meaningless; the daemon skips it.
+                self.blank_row.set_sensitive(on)
+
+        def on_monitors(self, row, _pspec):
+            if self.loading:
+                return
+            self.queue({"MONITORS": "different" if row.get_selected() == 1 else "same"})
+
+        def on_check(self, check, name):
+            if self.loading:
+                return
+            if check.get_active():
+                self.ticked.add(name)
+            else:
+                self.ticked.discard(name)
+            self.on_selection_changed()
+
+        def on_tick_all(self, _button, value):
+            self.loading = True
+            for check in self.checks.values():
+                check.set_active(value)
+            self.loading = False
+            self.ticked = set(self.names) if value else set()
+            self.on_selection_changed()
+
+        def on_selection_changed(self):
+            if self.loading:
+                return
+            self.update_count()
+            self.queue(selection_updates(
+                self.mode_row.get_selected() == 1, self.ticked, self.names))
+
+        def update_count(self):
+            n, total = len(self.ticked), len(self.names)
+            if n == 0:
+                self.count_label.set_text(
+                    _("No modules ticked: the screensaver has nothing to show"))
+            else:
+                self.count_label.set_text(
+                    gettext.ngettext("{} of {} module ticked",
+                                     "{} of {} modules ticked", total).format(n, total))
+
+        # ---- saving -----------------------------------------------------
+
+        def queue(self, updates):
+            self.pending.update(updates)
+            if self.save_source:
+                GLib.source_remove(self.save_source)
+            self.save_source = GLib.timeout_add(SAVE_DELAY_MS, self.flush)
+
+        def flush(self):
+            self.save_source = 0
+            if self.saving or not self.pending:
+                # A save in flight re-flushes when it finishes.
+                return GLib.SOURCE_REMOVE
+            updates, self.pending = self.pending, {}
+            self.saving = True
+
+            def done(ok, _out, err):
+                self.saving = False
+                if not ok:
+                    self.toast(_("Could not save: {}").format(err.strip()))
+                    self.pending.clear()
+                    self.load()  # show what the file really holds now
+                    return
+                self.config.update({k: v for k, v in updates.items()
+                                    if k not in ("INCLUDE", "EXCLUDE")})
+                if self.pending:
+                    self.flush()
+
+            retrosaver(set_args(updates), done)
+            return GLib.SOURCE_REMOVE
+
+        def on_close(self, *_args):
+            # Write a change made in the last half-second rather than drop it.
+            if self.save_source:
+                GLib.source_remove(self.save_source)
+                self.save_source = 0
+            # A save still in flight finishes on its own; this one is newer.
+            if self.pending:
+                updates, self.pending = self.pending, {}
+                launcher = Gio.Subprocess.new(
+                    [retrosaver_binary()] + set_args(updates), Gio.SubprocessFlags.NONE)
+                launcher.wait(None)
+            return False
+
+        def toast(self, message):
+            self.toasts.add_toast(Adw.Toast(title=GLib.markup_escape_text(message), timeout=5))
+
+        # ---- the service ------------------------------------------------
+
+        def on_active_changed(self, *_args):
+            if self.is_active() and self.config is not None:
+                self.refresh_service()
+
+        def refresh_service(self):
+            got = {}
+
+            def collect(key):
+                def cb(_ok, out, _err):
+                    got[key] = out
+                    if len(got) == 2:
+                        self.show_service(service_state(got["enabled"], got["active"]))
+                return cb
+
+            run(["systemctl", "--user", "is-enabled", UNIT], collect("enabled"))
+            run(["systemctl", "--user", "is-active", UNIT], collect("active"))
+
+        def show_service(self, state):
+            self.service = state
+            subtitles = {
+                "running": _("Running"),
+                "stopped": _("Set up, but not running. See journalctl --user -u retrosaver"),
+                "not-set-up": _("Off. GNOME's own screen blanking is in charge"),
+            }
+            self.service_row.set_subtitle(subtitles[state])
+            with self.service_switch.handler_block(self.service_handler):
+                self.service_switch.set_active(state != "not-set-up")
+            self.service_switch.set_sensitive(True)
+
+        def on_service_toggled(self, switch, _pspec):
+            if switch.get_active():
+                self.service_command("setup")
+                return
+            dialog = Adw.MessageDialog(
+                transient_for=self, heading=_("Turn off the screensaver?"),
+                body=_("retrosaver stops, and GNOME takes back the idle settings it "
+                       "had before setup, including its own screen lock timing. Your "
+                       "retrosaver settings are kept."))
+            dialog.add_response("cancel", _("Cancel"))
+            dialog.add_response("off", _("Turn Off"))
+            dialog.set_response_appearance("off", Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.set_default_response("cancel")
+            dialog.set_close_response("cancel")
+
+            def respond(_dialog, response):
+                if response == "off":
+                    self.service_command("teardown")
+                else:
+                    self.show_service(self.service)
+
+            dialog.connect("response", respond)
+            dialog.present()
+
+        def service_command(self, command):
+            self.service_switch.set_sensitive(False)
+            self.service_row.set_subtitle(
+                _("Setting up…") if command == "setup" else _("Turning off…"))
+
+            def done(ok, out, err):
+                if not ok:
+                    self.error_dialog(
+                        _("Setup failed") if command == "setup" else _("Turning off failed"),
+                        (err or out).strip())
+                self.refresh_service()
+
+            retrosaver([command], done)
+
+        def error_dialog(self, heading, body):
+            dialog = Adw.MessageDialog(transient_for=self, heading=heading, body=body)
+            dialog.add_response("close", _("Close"))
+            dialog.present()
+
+    class Application(Adw.Application):
+        def __init__(self):
+            super().__init__(application_id=APP_ID,
+                             flags=Gio.ApplicationFlags.DEFAULT_FLAGS
+                             if hasattr(Gio.ApplicationFlags, "DEFAULT_FLAGS")
+                             else Gio.ApplicationFlags.FLAGS_NONE)
+            about = Gio.SimpleAction.new("about", None)
+            about.connect("activate", self.on_about)
+            self.add_action(about)
+            quit_action = Gio.SimpleAction.new("quit", None)
+            quit_action.connect("activate", lambda *_a: self.quit_window())
+            self.add_action(quit_action)
+            self.set_accels_for_action("app.quit", ["<Control>q"])
+            self.set_accels_for_action("window.close", ["<Control>w"])
+
+        def quit_window(self):
+            window = self.get_active_window()
+            if window is not None:
+                window.close()
+
+        def do_activate(self):
+            window = self.get_active_window() or Window(self)
+            window.present()
+
+        def on_about(self, *_args):
+            def show(ok, out, _err):
+                version = out.split()[0] if ok and out.split() else ""
+                Adw.AboutWindow(
+                    transient_for=self.get_active_window(),
+                    application_name=_("Retrosaver"),
+                    application_icon=APP_ID,
+                    version=version,
+                    developer_name="Chris",
+                    license_type=Gtk.License.MIT_X11,
+                    website="https://retrosaver.prem.us",
+                    issue_url="https://github.com/c-premus/retrosaver/issues",
+                    comments=_("Classic XScreenSaver modules for GNOME on Wayland."),
+                ).present()
+
+            retrosaver(["version"], show)
+
+    return Application, Window
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

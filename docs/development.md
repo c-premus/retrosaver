@@ -12,7 +12,8 @@ traditional screensaver daemon no longer functions.
 
 It does **not** fork, patch, or vendor XScreenSaver. It reuses the display modules that
 Debian and Ubuntu already package, and supplies only the piece GNOME dropped: an idle
-trigger and a fullscreen wrapper. It ships as one static Go binary plus a systemd user unit.
+trigger and a fullscreen wrapper. It ships as one static Go binary plus a systemd user unit,
+and an optional settings app, `retrosaver-gtk`, in a package of its own.
 
 **Terminology.** XScreenSaver upstream calls its display modules "hacks", in the demoscene
 sense. This project says **module** everywhere — code, docs, config keys, log output — to
@@ -40,7 +41,7 @@ the idle monitor.
 | Blank | 22 min idle | Power the display off |
 
 ```
-cmd/retrosaver/      subcommand dispatch: daemon | run | stop | list | setup | teardown (+ version, help)
+cmd/retrosaver/      subcommand dispatch: daemon | run | stop | list | config | setup | teardown (+ version, help)
 internal/config/     KEY=value parser (never executes the file)
 internal/modules/    discovery: config XML basenames ∩ executables in libexec
 internal/idle/       org.gnome.Mutter.IdleMonitor D-Bus client
@@ -48,6 +49,8 @@ internal/window/     saver windows (one per monitor, over X via xgb), module pro
 internal/session/    loginctl lock-session, gsettings idle-delay, logind LockedHint watch
 internal/watch/      inotify watch on the config file, for live reload
 internal/daemon/     the state machine: five watch kinds, the cycle one self-re-arming
+gui/                 retrosaver-settings, the GTK 4 / libadwaita settings app (Python),
+                     with its desktop entry, AppStream metainfo and icons
 ```
 
 The behavioural contract is described here and in `README.md`; the manual verification
@@ -70,6 +73,9 @@ go build -o retrosaver ./cmd/retrosaver
 go test ./...          # every package; live tests skip unless RETROSAVER_LIVE=1
 go test -race ./...    # what CI runs
 tests/smoke.sh         # host-only; needs a real GNOME/Wayland session
+python3 -m unittest discover -s gui    # the settings app's logic; no GTK needed
+desktop-file-validate gui/us.prem.Retrosaver.desktop
+appstreamcli validate --no-net gui/us.prem.Retrosaver.metainfo.xml
 ```
 
 ### Code quality
@@ -118,7 +124,44 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
 gzip -9 -n -c docs/retrosaver.1 > dist/retrosaver.1.gz
 cp dist/retrosaver-linux-amd64 dist/retrosaver
 VERSION=0.0.0-dev GOARCH=amd64 nfpm pkg --packager deb --target dist/
+gzip -9 -n -c docs/retrosaver-settings.1 > dist/retrosaver-settings.1.gz
+VERSION=0.0.0-dev nfpm pkg --config nfpm-gtk.yaml --packager deb --target dist/
 ```
+
+The second package, `retrosaver-gtk`, is the settings app. It is `Architecture: all`, so
+a release builds it once, and it `Depends:` on exactly the same `retrosaver` version.
+`build-apt-repo.sh` expects an `all` package to appear in every arch's index.
+
+### The settings app
+
+`gui/retrosaver-settings` is a single Python 3 file using PyGObject, GTK 4 and libadwaita:
+the usual way to write a small GNOME settings tool (GNOME Tweaks is one). Run it from the
+tree against a local build, pointing it at a scratch config so it cannot touch yours:
+
+```bash
+go build -o retrosaver ./cmd/retrosaver
+XDG_CONFIG_HOME="$(mktemp -d)" RETROSAVER=./retrosaver gui/retrosaver-settings
+```
+
+Rules it follows:
+
+- **It is a front end, not a second config implementation.** It reads and writes
+  nothing itself, and calls `retrosaver config show --json`, `retrosaver config set` and
+  `retrosaver list --all --json`. Those outputs are the contract between the two packages,
+  which is why `retrosaver-gtk` pins its `retrosaver` version exactly. A new config key
+  needs a control here too.
+- **Logic that can be tested without GTK stays outside it.** Everything above `main()`
+  imports no `gi`, and `gui/test_settings.py` covers it. The GTK classes are built by
+  `gtk_classes()`, so a script can drive a real window: set a control, wait out the
+  half-second save delay, and read the file.
+- **libadwaita 1.2 API only** (`ActionRow`/`ExpanderRow` with suffix widgets,
+  `MessageDialog`, `AboutWindow`), so it runs on Debian bookworm as well as current
+  releases. Newer widgets such as `SpinRow` and `PreferencesDialog` are not available
+  there.
+- **Every user-visible string goes through `_()`**, text domain `retrosaver`.
+  `gui/po/POTFILES` lists the sources for `xgettext` when translations arrive.
+- **The service toggle runs `retrosaver setup` and `teardown`**, so do not flip it
+  while testing on a host whose daemon you depend on.
 
 ### The apt repository
 

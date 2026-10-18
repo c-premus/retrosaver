@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Retrosaver
+GenericName=Screensaver Settings
+Comment=Choose and time classic XScreenSaver modules
+Exec=retrosaver-settings
+TryExec=retrosaver-settings
+Icon=us.prem.Retrosaver
+Terminal=false
+Categories=GTK;GNOME;Settings;DesktopSettings;
+Keywords=screensaver;xscreensaver;idle;lock;blank;
+StartupNotify=true

@@ -1,0 +1,66 @@
+.TH RETROSAVER-SETTINGS 1 "2026-10-17" "retrosaver 0.6.2" "User Commands"
+.SH NAME
+retrosaver\-settings \- settings window for retrosaver
+.SH SYNOPSIS
+.B retrosaver\-settings
+.SH DESCRIPTION
+.B retrosaver\-settings
+is a GTK 4 and libadwaita window for
+.BR retrosaver (1),
+which brings classic XScreenSaver display modules back to GNOME on Wayland. It appears in
+the GNOME app grid as
+.BR Retrosaver .
+.PP
+The
+.B General
+page turns the screensaver on or off, which runs
+.B retrosaver setup
+or
+.BR "retrosaver teardown" ,
+and sets how long the session must be idle before the screensaver starts, how often it
+switches modules, and when the session locks and the display turns off. Times are shown
+in minutes. A delay that is not a whole number of minutes is shown rounded, labelled with
+its exact value, and left alone unless it is changed.
+.PP
+The
+.B Modules
+page lists every installed display module with its description, to tick the ones the
+screensaver may show. In
+.B "All modules except unticked ones"
+mode the unticked modules are written to
+.BR EXCLUDE ;
+in
+.B "Only ticked modules"
+mode the ticked ones are written to
+.BR INCLUDE .
+.PP
+Changes are saved half a second after the last one, with no Apply button, and a running
+daemon picks them up by itself.
+.SH NOTES
+The window never reads or writes the configuration file directly. It runs
+.BR "retrosaver config show \-\-json" ,
+.B retrosaver config set
+and
+.BR "retrosaver list \-\-all \-\-json" ,
+so the file is parsed and validated in one place. A file that does not parse is reported
+and nothing is edited until it is fixed.
+.SH ENVIRONMENT
+.TP
+.B RETROSAVER
+The
+.B retrosaver
+executable to run, instead of the one on
+.BR PATH ;
+for running from a source tree.
+.TP
+.B XDG_CONFIG_HOME
+Passed on to
+.BR retrosaver ,
+which reads its configuration from
+.IR $XDG_CONFIG_HOME/retrosaver/retrosaver.conf .
+.SH SEE ALSO
+.BR retrosaver (1)
+.PP
+Project home: https://github.com/c-premus/retrosaver
+.SH AUTHOR
+Chris <63758245+c-premus@users.noreply.github.com>.

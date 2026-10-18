@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>us.prem.Retrosaver</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Retrosaver</name>
+  <summary>Classic XScreenSaver modules for GNOME on Wayland</summary>
+  <developer id="us.prem">
+    <name>Chris</name>
+  </developer>
+  <description>
+    <p>
+      Retrosaver brings back the late-1990s XScreenSaver display modules, such as
+      the atlantis fish tank, flame fractals, flying toasters and spinning pipes, on
+      GNOME desktops running Wayland, where the traditional screensaver daemon no
+      longer works.
+    </p>
+    <p>
+      This app sets how long the computer waits before the screensaver starts, how
+      often it switches modules, and when the screen locks and turns off. It also
+      picks which modules can appear and turns the screensaver on or off.
+    </p>
+    <p>
+      Retrosaver is not a screen locker. Locking is handed to GNOME's own lock
+      screen.
+    </p>
+  </description>
+  <launchable type="desktop-id">us.prem.Retrosaver.desktop</launchable>
+  <icon type="stock">us.prem.Retrosaver</icon>
+  <url type="homepage">https://retrosaver.prem.us</url>
+  <url type="bugtracker">https://github.com/c-premus/retrosaver/issues</url>
+  <url type="vcs-browser">https://github.com/c-premus/retrosaver</url>
+  <categories>
+    <category>Settings</category>
+    <category>DesktopSettings</category>
+  </categories>
+  <keywords>
+    <keyword>screensaver</keyword>
+    <keyword>xscreensaver</keyword>
+  </keywords>
+  <provides>
+    <binary>retrosaver-settings</binary>
+  </provides>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+  </releases>
+</component>
