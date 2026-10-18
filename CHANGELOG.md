@@ -11,6 +11,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-18
+
 ### Added
 
 - **A settings app.** The new `retrosaver-gtk` package adds Retrosaver to the GNOME app
@@ -319,7 +321,8 @@ First release.
 - GNOME on Wayland only. KDE and wlroots support the Wayland idle protocols, so upstream
   xscreensaver 6.11+ works there natively.
 
-[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/c-premus/retrosaver/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/c-premus/retrosaver/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/c-premus/retrosaver/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/c-premus/retrosaver/compare/v0.5.1...v0.6.0
