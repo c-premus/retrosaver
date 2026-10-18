@@ -115,7 +115,7 @@ still owned it.
 
 Use the release workflow's exact flags, or `main.version` stays `"dev"`. The man page must
 be gzipped into `dist/` first: nfpm does not compress man pages, and `nfpm.yaml` refers to
-`./dist/retrosaver.1.gz`. CI and the release workflow use nfpm 2.47.0.
+`./dist/retrosaver.1.gz`. CI and the release workflow use nfpm 2.48.0.
 
 ```bash
 mkdir -p dist
