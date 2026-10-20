@@ -35,7 +35,7 @@ go 1.26.0
 
 // What CI actually builds with. Bump this freely; bump the
 // line above only when a dependency forces it or the code needs a newer feature.
-toolchain go1.27.2
+toolchain go1.27.3
 
 require github.com/godbus/dbus/v5 v5.2.4
 
