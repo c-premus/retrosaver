@@ -150,7 +150,7 @@ jobs:
       # pin an x/tools that lags Go's export data format: staticcheck 2026.2.1
       # cannot read Go 1.27.2's export data v5.
       - name: golangci-lint (GATE)
-        run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0 run ./...
+        run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...
 
       # Catches vulnerabilities reachable from this module's own code, including
       # the Go standard library compiled into the shipped binary. Automated
