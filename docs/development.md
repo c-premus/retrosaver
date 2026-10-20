@@ -207,6 +207,7 @@ Runtime dependencies:
 | | Debian, Ubuntu | Fedora |
 |---|---|---|
 | Python bindings | `python3-gi` | `python3-gobject` |
+| GObject introspection data | pulled in by `gir1.2-gtk-4.0` | `gobject-introspection` |
 | GTK 4 | `gir1.2-gtk-4.0` | `gtk4` |
 | libadwaita (1.2 or newer) | `gir1.2-adw-1` | `libadwaita` |
 | The daemon | `retrosaver (= version)` | `retrosaver = %{version}-%{release}` |
@@ -225,7 +226,8 @@ appstream-util validate-relax --nonet gui/us.prem.Retrosaver.metainfo.xml  # Fed
 ```
 
 Tested on Fedora 44 (GTK 4.22, libadwaita 1.9, xscreensaver 6.16), where module
-discovery, all four checks and a scripted run of the window pass.
+discovery, all four checks and a scripted run of the window pass. That test did not
+catch the `gobject-introspection` requirement; the Fedora COPR packaging did.
 
 ### The apt repository
 
