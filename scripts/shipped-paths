@@ -1,0 +1,31 @@
+# Git pathspecs for everything a release's packages are built from: the inputs
+# to the binary plus every file nfpm.yaml and nfpm-gtk.yaml package. Test files
+# are compiled into nothing.
+#
+# A commit that touches none of these changes nothing a user installs. It does
+# not trigger the automatic release, and generate-changelog.sh leaves it out of
+# the changelog, so a CI tool bump never reads as a change to the package.
+#
+# Keep this in step with nfpm.yaml and nfpm-gtk.yaml. A packaged file missing
+# from here is not lost: a change to it simply waits for the next release, and
+# that release's changelog does not mention it.
+#
+# One pathspec per line. Blank lines and lines starting with # are ignored.
+
+cmd
+internal
+go.mod
+go.sum
+nfpm.yaml
+systemd
+config
+packaging
+LICENSE
+README.md
+docs/retrosaver.1
+scripts/postinstall.sh
+nfpm-gtk.yaml
+gui
+docs/retrosaver-settings.1
+:(exclude)*_test.go
+:(exclude)gui/test_*.py

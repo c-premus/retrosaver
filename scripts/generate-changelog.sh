@@ -20,6 +20,10 @@
 #     internal bookkeeping commits stay out.
 #   - BREAKING is detected from `!:` after the type or `BREAKING CHANGE` in the
 #     body.
+#   - A commit must also touch a path in scripts/shipped-paths, the files the
+#     packages are built from. A chore(deps) bump of a CI tool changes nothing
+#     a user installs, so it stays out, as it stays out of the decision to
+#     release at all.
 #
 # Usage:
 #   generate-changelog.sh --version v0.0.3                 # markdown section
@@ -61,17 +65,43 @@ else
     RANGE="HEAD" # first ever release: everything
 fi
 
-# list_commits prints "<hash> <subject>" for the range.
-list_commits() {
-    git log "$RANGE" --no-merges --pretty=format:'%h %s' || true
+# The pathspecs a commit must touch to reach the changelog. An empty list
+# would match every file, so it is an error rather than a silent no-op.
+mapfile -t SHIPPED < <(grep -vE '^[[:space:]]*(#|$)' "$(dirname "$0")/shipped-paths")
+if [ "${#SHIPPED[@]}" -eq 0 ]; then
+    echo "generate-changelog.sh: scripts/shipped-paths lists nothing" >&2
+    exit 2
+fi
+
+# ships succeeds when a commit touches something the packages are built from.
+ships() {
+    [ -n "$(git diff-tree --root --no-commit-id --name-only -r "$1" -- "${SHIPPED[@]}")" ]
 }
 
-# list_breaking_body prints "<hash> <subject>" for commits whose BODY declares a
-# breaking change, which the subject-line pattern alone would miss.
+# keep_shipped filters "<hash> <subject>" lines down to commits that ship.
+keep_shipped() {
+    local hash rest
+    # git log's format: leaves the last line unterminated, which read reports
+    # as a failure even though it filled the variables.
+    while IFS=' ' read -r hash rest || [ -n "$hash" ]; do
+        [ -z "$hash" ] && continue
+        if ships "$hash"; then
+            printf '%s %s\n' "$hash" "$rest"
+        fi
+    done
+}
+
+# list_commits prints "<hash> <subject>" for the range's shipped commits.
+list_commits() {
+    { git log "$RANGE" --no-merges --pretty=format:'%h %s' || true; } | keep_shipped
+}
+
+# list_breaking_body prints "<hash> <subject>" for shipped commits whose BODY
+# declares a breaking change, which the subject-line pattern alone would miss.
 list_breaking_body() {
-    git log "$RANGE" --no-merges --pretty=format:'%H%x00%s%x00%b%x1e' \
+    { git log "$RANGE" --no-merges --pretty=format:'%h%x00%s%x00%b%x1e' \
         | awk -v RS=$'\x1e' -F'\x00' '$3 ~ /BREAKING CHANGE/ { print $1 " " $2 }' \
-        || true
+        || true; } | keep_shipped
 }
 
 # strip_type turns "fix(packaging): restart the daemon" into
@@ -113,7 +143,7 @@ FIXES=$(subjects_matching '^[0-9a-f]+ fix(\([^)]*\))?!?:' || true)
 CHORES=$(subjects_matching '^[0-9a-f]+ chore(\([^)]*\))?!?:' || true)
 
 if [ -z "$BREAKING$FEATURES$FIXES$CHORES" ]; then
-    echo "generate-changelog.sh: no feat/fix/chore/BREAKING commits in ${RANGE}" >&2
+    echo "generate-changelog.sh: no feat/fix/chore/BREAKING commits in ${RANGE} touch scripts/shipped-paths" >&2
     exit 3
 fi
 
