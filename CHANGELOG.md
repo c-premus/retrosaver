@@ -11,6 +11,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-21
+
+### Maintenance
+
+- Update go toolchain directive to v1.27.3 (#64)
+- Update module github.com/golangci/golangci-lint/v2 to v2.15.0 (#63)
+- Pin node.js to 0e5f906
+
 ## [0.7.0] - 2026-10-18
 
 ### Added
@@ -321,7 +329,8 @@ First release.
 - GNOME on Wayland only. KDE and wlroots support the Wayland idle protocols, so upstream
   xscreensaver 6.11+ works there natively.
 
-[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/c-premus/retrosaver/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/c-premus/retrosaver/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/c-premus/retrosaver/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/c-premus/retrosaver/compare/v0.6.0...v0.6.1
