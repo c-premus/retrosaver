@@ -11,6 +11,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-10
+
+### Fixed
+
+- Update module golang.org/x/sys to v0.50.0 (#76)
+
 ## [0.7.1] - 2026-10-21
 
 ### Maintenance
@@ -329,7 +335,8 @@ First release.
 - GNOME on Wayland only. KDE and wlroots support the Wayland idle protocols, so upstream
   xscreensaver 6.11+ works there natively.
 
-[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/c-premus/retrosaver/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/c-premus/retrosaver/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/c-premus/retrosaver/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/c-premus/retrosaver/compare/v0.6.1...v0.6.2
