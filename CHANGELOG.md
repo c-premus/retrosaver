@@ -11,6 +11,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-11-12
+
+### Maintenance
+
+- Update go toolchain directive to v1.27.4 (#77)
+
 ## [0.7.2] - 2026-11-10
 
 ### Fixed
@@ -335,7 +341,8 @@ First release.
 - GNOME on Wayland only. KDE and wlroots support the Wayland idle protocols, so upstream
   xscreensaver 6.11+ works there natively.
 
-[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/c-premus/retrosaver/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/c-premus/retrosaver/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/c-premus/retrosaver/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/c-premus/retrosaver/compare/v0.6.2...v0.7.0
