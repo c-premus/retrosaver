@@ -209,7 +209,7 @@ Runtime dependencies:
 | Python bindings | `python3-gi` | `python3-gobject` |
 | GObject introspection data | pulled in by `gir1.2-gtk-4.0` | `gobject-introspection` |
 | GTK 4 | `gir1.2-gtk-4.0` | `gtk4` |
-| libadwaita (1.2 or newer) | `gir1.2-adw-1` | `libadwaita` |
+| libadwaita (1.2 or newer) | `gir1.2-adw-1 (>= 1.2)` | `libadwaita` |
 | The daemon | `retrosaver (= version)` | `retrosaver = %{version}-%{release}` |
 
 **Pin the daemon to the exact same version.** The app's only interface is the output of

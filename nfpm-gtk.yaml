@@ -28,7 +28,7 @@ depends:
   - python3 (>= 3.10)
   - python3-gi
   - gir1.2-gtk-4.0
-  - gir1.2-adw-1
+  - gir1.2-adw-1 (>= 1.2)
 
 # dpkg's own triggers refresh the icon cache, the desktop database and the
 # AppStream cache when these paths change, so no maintainer scripts are needed.

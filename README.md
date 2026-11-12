@@ -79,6 +79,15 @@ command-line tool, and the optional `retrosaver-gtk`, which adds a
 [settings app](#the-settings-app). There are two ways to get them, and both install the
 same `.deb` files:
 
+| Ubuntu | `retrosaver` | `retrosaver-gtk` |
+|---|---|---|
+| 26.04 LTS (GNOME 50) | Tested | Tested |
+| 24.04 LTS (GNOME 46) | Expected to work, not yet tested | Expected to work, not yet tested |
+| 22.04 LTS (GNOME 42) | Untested | Not installable: needs libadwaita 1.2, and 22.04 has 1.1 |
+
+Older releases are not supported. On Debian, the settings app's lowest supported
+libadwaita, 1.2, is what bookworm ships.
+
 - **The apt repository** (recommended). `apt upgrade` picks up each new release.
 - **A release asset.** You download and install each new version yourself.
 
