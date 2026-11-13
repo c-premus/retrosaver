@@ -11,6 +11,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-11-13
+
+### Fixed
+
+- Require libadwaita 1.2 for the settings app
+
 ## [0.7.3] - 2026-11-12
 
 ### Maintenance
@@ -341,7 +347,8 @@ First release.
 - GNOME on Wayland only. KDE and wlroots support the Wayland idle protocols, so upstream
   xscreensaver 6.11+ works there natively.
 
-[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/c-premus/retrosaver/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/c-premus/retrosaver/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/c-premus/retrosaver/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/c-premus/retrosaver/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/c-premus/retrosaver/compare/v0.7.0...v0.7.1

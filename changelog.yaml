@@ -6,6 +6,12 @@
 #
 # Keep each `note` on a SINGLE line. chglog renders every subsequent line of a note as a
 # "-" sub-bullet, which makes a wrapped sentence look like a broken list.
+- semver: 0.7.4
+  date: 2026-11-13T00:00:00Z
+  packager: Chris <63758245+c-premus@users.noreply.github.com>
+  changes:
+    - note: "Require libadwaita 1.2 for the settings app"
+
 - semver: 0.7.3
   date: 2026-11-12T00:00:00Z
   packager: Chris <63758245+c-premus@users.noreply.github.com>
