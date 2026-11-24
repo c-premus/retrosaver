@@ -201,7 +201,7 @@ jobs:
     name: Settings app window
     runs-on: ubuntu-latest
     container:
-      image: node:22-bookworm@sha256:e13726ca604184d7a91fcacab1fc09eefd642dc28e79ac34e85540dd93b78cfb
+      image: node:22-bookworm@sha256:1a81f3fd55b56c8fe964333a05bd1f257450b914a1196eb8bd577374900a1f70
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
